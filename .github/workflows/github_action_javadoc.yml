@@ -6,6 +6,11 @@ on:
     paths:
       - '**/*.java'
 
+# Prevent this job from racing with formatter (both push to PR branch)
+concurrency:
+  group: format-${{ github.event.pull_request.head.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: write
@@ -15,113 +20,125 @@ permissions:
 jobs:
   generate-javadoc:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout PR
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        token: ${{ secrets.GITHUB_TOKEN }}
-        ref: ${{ github.event.pull_request.head.ref }}
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-    # Ensure we actually have origin/main available
-    - name: Fetch main
-      run: git fetch origin main
+      # NEW: Rebase EARLY while working tree is clean
+      - name: Rebase onto latest branch tip
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH="${{ github.event.pull_request.head.ref }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+          git pull --rebase origin "$BRANCH"
 
-    # Pull scripts from main into a temp dir OUTSIDE the repo (won't be committed)
-    - name: Checkout scripts from main (safe)
-      run: |
-        TOOLING_DIR="$(mktemp -d)"
-        echo "TOOLING_DIR=$TOOLING_DIR" >> $GITHUB_ENV
-        git archive --format=tar origin/main scripts | tar -x -C "$TOOLING_DIR"
+      # Ensure we actually have origin/main available
+      - name: Fetch main
+        run: git fetch origin main
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.9'
+      # Pull scripts from main into a temp dir OUTSIDE the repo (won't be committed)
+      - name: Checkout scripts from main (safe)
+        run: |
+          TOOLING_DIR="$(mktemp -d)"
+          echo "TOOLING_DIR=$TOOLING_DIR" >> $GITHUB_ENV
+          git archive --format=tar origin/main scripts | tar -x -C "$TOOLING_DIR"
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r "$TOOLING_DIR/scripts/github_action_javadoc/requirements.txt"
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
 
-    - name: Configure git
-      run: |
-        git config --local user.email "javadoc-bot@github.com"
-        git config --local user.name "Javadoc Bot"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r "$TOOLING_DIR/scripts/github_action_javadoc/requirements.txt"
 
-    - name: Check for API key
-      run: |
-        if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
-          echo "Error: ANTHROPIC_API_KEY secret is not set"
-          echo "If this is a PR from a fork, repository secrets are unavailable."
-          exit 1
-        fi
+      - name: Configure git
+        run: |
+          git config --local user.email "javadoc-bot@github.com"
+          git config --local user.name "Javadoc Bot"
 
-    - name: Generate Javadoc comments
-      id: generate
-      env:
-        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        GITHUB_BASE_REF: ${{ github.base_ref }}
-      run: |
-        echo "Processing Java files changed in PR #${{ github.event.number }}"
-        
-        INITIAL_COMMITS=$(git rev-list --count HEAD)
-        
-        # Run the tool from main, against the PR working tree
-        python "$TOOLING_DIR/scripts/github_action_javadoc/action.py" --commit
-        
-        FINAL_COMMITS=$(git rev-list --count HEAD)
-        
-        if [ "$FINAL_COMMITS" -gt "$INITIAL_COMMITS" ]; then
-          echo "has_changes=true" >> $GITHUB_OUTPUT
-          echo "✅ Javadoc changes generated and committed"
-        else
-          echo "has_changes=false" >> $GITHUB_OUTPUT
-          echo "ℹ️ No Javadoc changes needed"
-        fi
-    
-    - name: Push changes
-      if: steps.generate.outputs.has_changes == 'true'
-      run: |
-        git push origin ${{ github.event.pull_request.head.ref }}
-        echo "✅ Pushed Javadoc updates to PR #${{ github.event.number }}"
-    
-    - name: Comment on PR
-      if: steps.generate.outputs.has_changes == 'true'
-      uses: actions/github-script@v6
-      with:
-        script: |
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: '🤖 **Javadoc Auto-Generation Complete**\n\nI\'ve automatically generated/updated Javadoc comments for the Java files modified in this PR.\n\n- ✅ Generated documentation for classes and methods\n- 🔄 Preserved existing accurate @param and @return tags\n- 🛠️ Fixed clearly incorrect documentation\n\n*Generated using Claude AI via GitHub Actions*'
-          })
-    
-    - name: Set status check
-      if: always()
-      uses: actions/github-script@v6
-      continue-on-error: true
-      with:
-        script: |
-          try {
-            const status = '${{ job.status }}' === 'success' ? 'success' : 'failure';
-            const description = status === 'success' ? 
-              'Javadoc generation completed successfully' : 
-              'Javadoc generation failed';
-            
-            await github.rest.repos.createCommitStatus({
+      - name: Check for API key
+        run: |
+          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "Error: ANTHROPIC_API_KEY secret is not set"
+            echo "If this is a PR from a fork, repository secrets are unavailable."
+            exit 1
+          fi
+
+      - name: Generate Javadoc comments
+        id: generate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+        run: |
+          echo "Processing Java files changed in PR #${{ github.event.number }}"
+          
+          INITIAL_COMMITS=$(git rev-list --count HEAD)
+          
+          # Run the tool from main, against the PR working tree
+          python "$TOOLING_DIR/scripts/github_action_javadoc/action.py" --commit
+          
+          FINAL_COMMITS=$(git rev-list --count HEAD)
+          
+          if [ "$FINAL_COMMITS" -gt "$INITIAL_COMMITS" ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "✅ Javadoc changes generated and committed"
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "ℹ️ No Javadoc changes needed"
+          fi
+
+      - name: Push changes
+        if: steps.generate.outputs.has_changes == 'true'
+        run: |
+          git push origin ${{ github.event.pull_request.head.ref }}
+          echo "✅ Pushed Javadoc updates to PR #${{ github.event.number }}"
+
+      - name: Comment on PR
+        if: steps.generate.outputs.has_changes == 'true'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              sha: context.payload.pull_request.head.sha,
-              state: status,
-              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
-              description: description,
-              context: 'Javadoc Generation'
-            });
-            console.log('✅ Status check created successfully');
-          } catch (error) {
-            console.log('⚠️ Could not create status check (insufficient permissions):', error.message);
-            console.log('This is non-critical - the action still completed successfully');
-          }
+              body: '🤖 **Javadoc Auto-Generation Complete**\n\nI\'ve automatically generated/updated Javadoc comments for the Java files modified in this PR.\n\n- ✅ Generated documentation for classes and methods\n- 🔄 Preserved existing accurate @param and @return tags\n- 🛠️ Fixed clearly incorrect documentation\n\n*Generated using Claude AI via GitHub Actions*'
+            })
+
+      - name: Set status check
+        if: always()
+        uses: actions/github-script@v6
+        continue-on-error: true
+        with:
+          script: |
+            try {
+              const status = '${{ job.status }}' === 'success' ? 'success' : 'failure';
+              const description = status === 'success' ? 
+                'Javadoc generation completed successfully' : 
+                'Javadoc generation failed';
+            
+              await github.rest.repos.createCommitStatus({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                sha: context.payload.pull_request.head.sha,
+                state: status,
+                target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                description: description,
+                context: 'Javadoc Generation'
+              });
+              console.log('✅ Status check created successfully');
+            } catch (error) {
+              console.log('⚠️ Could not create status check (insufficient permissions):', error.message);
+              console.log('This is non-critical - the action still completed successfully');
+            }
