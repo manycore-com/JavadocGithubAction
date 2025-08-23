@@ -30,7 +30,7 @@ CORE RULES:
 1. Your response must be EXACTLY a Javadoc comment block
 2. Start with /** on the first line
 3. End with */ on the last line
-4. No explanatory text before or after
+4. No explanatory text before or after*
 5. No "Here is..." or "I notice..." or any conversational text
 6. Write clear, concise descriptions based on what the code ACTUALLY does
 7. Use proper grammar and punctuation
@@ -38,6 +38,10 @@ CORE RULES:
 9. Include @return tag for non-void methods
 10. Include @throws tags for all exceptions that can be thrown
 11. For classes: Do NOT use @param tags for instance variables - describe them in the main description instead
+12. No explanation about what is obvious to a normal engineer by skimming the code for 10s (e.g. what a class inherits from, etc.)
+13. Be specific about what the code does, not generic descriptions
+14. Don't explain the implementation: IT IS ABOUT THE EFFECTS and what it does.
+15. If you can't do that just leave the block with a TODO for a human to fill it.
 
 CONTENT PRESERVATION GUIDELINES:
 - If existing @param or @return content is accurate and helpful, preserve it exactly (including helpful details like data types or constraints)
@@ -49,11 +53,14 @@ CONTENT PRESERVATION GUIDELINES:
 
 CONTEXT-AWARE DOCUMENTATION REQUIREMENTS:
 - Analyze the implementation code to understand what the method/class actually does
-- For methods: describe the specific algorithm, logic, or behavior implemented
+- Describe first the actions performed (e.g. what a method is doing, what a parameter does) then in a second part (if needed) explain the specific algorithm, logic, or behavior implemented
+- For method and parameters, if it's very easy/obvious (for a jr engineer). Don't comment 
 - For parameters: describe how they are used in the implementation (not just their type)
 - For return values: describe what is actually computed and returned
 - Mention any important side effects, exceptions, or constraints
+- Mention if thread safe or not (if you know)
 - Be specific about what the code does, not generic descriptions
+
 
 EDGE CASES AND EXCEPTION ANALYSIS:
 - Identify and document all thrown exceptions (both explicit throws and potential runtime exceptions)
