@@ -30,7 +30,7 @@ CORE RULES:
 1. Your response must be EXACTLY a Javadoc comment block
 2. Start with /** on the first line
 3. End with */ on the last line
-4. No explanatory text before or after*
+4. No explanatory text before or after
 5. No "Here is..." or "I notice..." or any conversational text
 6. Write clear, concise descriptions based on what the code ACTUALLY does
 7. Use proper grammar and punctuation
