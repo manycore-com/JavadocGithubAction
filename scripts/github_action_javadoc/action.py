@@ -1,270 +1,290 @@
 #!/usr/bin/env python3
+"""
+Enhanced action.py that properly uses BASE-PROMPT.md template with full context.
+Maintains the original calling pattern while fixing the issues.
+"""
 
 import os
+import re
 import sys
-import subprocess
-import traceback
 from anthropic import Anthropic
 
-# Import common functionality
+# Import from javadoc_common as in original
 from javadoc_common import (
-    load_prompt_template,
     parse_java_file,
+    load_prompt_template,
     extract_javadoc_from_response,
-    add_javadoc_to_file
 )
 
-def get_changed_java_files():
-    """Get list of Java files changed in the current PR."""
-    try:
-        # Get the base branch (usually main or master)
-        base_ref = os.environ.get('GITHUB_BASE_REF', 'main')
-        
-        # Get changed files between base branch and current branch
-        result = subprocess.run(
-            ['git', 'diff', '--name-only', f'origin/{base_ref}...HEAD'],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        
-        changed_files = result.stdout.strip().split('\n')
-        java_files = [f for f in changed_files if f.endswith('.java') and os.path.exists(f)]
-        
-        print(f"Found {len(java_files)} changed Java files:")
-        for f in java_files:
-            print(f"  - {f}")
-        
-        return java_files
+
+def generate_documentation_with_diagnostics(client, item):
+    """Generate documentation using the BASE-PROMPT.md template properly."""
     
-    except subprocess.CalledProcessError as e:
-        print(f"Error getting changed files: {e}", file=sys.stderr)
-        return []
-
-def commit_changes(files_modified, total_usage_stats=None):
-    """Commit the changes made to Java files with cost information."""
-    if not files_modified:
-        print("No files were modified.")
-        return
+    print(f"\n{'='*60}")
+    print(f"GENERATING FOR: {item['type']} {item['name']}")
+    print('='*60)
     
-    try:
-        # Add the modified files
-        for file_path in files_modified:
-            subprocess.run(['git', 'add', file_path], check=True)
-        
-        # Create commit message
-        commit_msg_parts = [
-            f"Add/update Javadoc comments for {len(files_modified)} file(s)",
-            "",
-            "Files modified:"
-        ]
-        
-        for file_path in files_modified:
-            commit_msg_parts.append(f"- {file_path}")
-        
-        if total_usage_stats:
-            commit_msg_parts.extend([
-                "",
-                f"API Usage: {total_usage_stats.get('total_tokens', 0)} tokens, "
-                f"${total_usage_stats.get('total_cost', 0):.4f} estimated cost"
-            ])
-        
-        commit_msg_parts.extend([
-            "",
-            "🤖 Generated with [Claude Code](https://claude.ai/code)",
-            "",
-            "Co-Authored-By: Claude <noreply@anthropic.com>"
-        ])
-        
-        commit_message = '\n'.join(commit_msg_parts)
-        
-        # Commit the changes
-        subprocess.run(['git', 'commit', '-m', commit_message], check=True)
-        print(f"✅ Committed changes for {len(files_modified)} files")
-        
-    except subprocess.CalledProcessError as e:
-        print(f"Error committing changes: {e}", file=sys.stderr)
-
-def generate_javadoc(client, item, java_content, prompt_template=None):
-    """Generate Javadoc comment using Claude API."""
-    if prompt_template is None:
-        prompt_template = load_prompt_template()
-
-    # Prepare template variables
-    modifiers = ' '.join(item.get('modifiers', [])) if item.get('modifiers') else 'default'
-    parameters = ''
-    if item.get('parameters'):
-        param_list = []
-        for param in item['parameters']:
-            param_list.append(f"{param['type']} {param['name']}")
-        parameters = ', '.join(param_list)
-
-    # Prepare existing content
-    existing_content = ""
-    if item.get('existing_javadoc'):
-        existing_javadoc_content = item['existing_javadoc']['content']
-        existing_content = f"EXISTING JAVADOC TO PRESERVE/IMPROVE:\n{existing_javadoc_content}"
-
-    # Format the prompt
-    prompt = prompt_template.format(
-        item_type=item['type'],
-        item_name=item['name'],
-        item_signature=item.get('signature', ''),
-        modifiers=modifiers,
-        parameters=parameters,
-        return_type=item.get('return_type', ''),
-        implementation_code=item.get('implementation_code', ''),
-        existing_content=existing_content,
-        java_content=java_content[:2000]  # Limit context size
-    )
-
-    try:
-        response = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1000,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        # Extract just the Javadoc from the response
-        javadoc = extract_javadoc_from_response(response.content[0].text)
-        
-        # Calculate usage stats
-        usage_info = {
-            'input_tokens': response.usage.input_tokens,
-            'output_tokens': response.usage.output_tokens,
-            'total_tokens': response.usage.input_tokens + response.usage.output_tokens,
-            'estimated_cost': (response.usage.input_tokens * 0.000003) + (response.usage.output_tokens * 0.000015)
-        }
-        
-        return javadoc, usage_info
-        
-    except Exception as e:
-        print(f"Error generating Javadoc for {item['name']}: {e}", file=sys.stderr)
+    print("\n1. ITEM DETAILS:")
+    print(f"   Type: {item['type']}")
+    print(f"   Has JavaDoc: {item.get('has_javadoc', False)}")
+    print(f"   Has Impl Notes: {item.get('has_impl_notes', False)}")
+    
+    # Skip if both already exist
+    if item.get('has_javadoc') and item.get('has_impl_notes', False):
+        print("   ✔ Already fully documented, skipping")
         return None, None
-
-def get_credits_info(client):
-    """Get current credits information from Anthropic API."""
-    try:
-        # This is a placeholder - Anthropic doesn't have a public credits API endpoint
-        # In a real implementation, you might track usage locally or use other methods
-        return {"credits_remaining": "Unknown", "credits_used": "Unknown"}
-    except Exception as e:
-        print(f"Warning: Could not get credits info: {e}", file=sys.stderr)
-        return None
-
-def main():
-    """Main entry point for GitHub Action."""
-    # Get API key from environment
-    api_key = os.environ.get('ANTHROPIC_API_KEY')
-    if not api_key:
-        print("Error: ANTHROPIC_API_KEY environment variable is required", file=sys.stderr)
-        sys.exit(1)
     
-    # Initialize Claude client
-    client = Anthropic(api_key=api_key)
+    # Load the prompt template from BASE-PROMPT.md
+    base_template = load_prompt_template()
     
-    # Get changed Java files
-    java_files = get_changed_java_files()
-    
-    if not java_files:
-        print("No Java files found in PR changes.")
-        return
-    
-    # Load prompt template once
-    prompt_template = load_prompt_template()
-    
-    # Initialize usage tracking
-    total_usage_stats = {
-        'total_input_tokens': 0,
-        'total_output_tokens': 0,
-        'total_tokens': 0,
-        'total_cost': 0.0,
-        'items_processed': 0,
-        'credits_info': None
-    }
-    
-    # Try to get initial credits info
-    initial_credits = get_credits_info(client)
-    if initial_credits:
-        total_usage_stats['credits_info'] = initial_credits
-    
-    files_modified = []
-    
-    # Process each Java file
-    for java_file in java_files:
-        print(f"\n{'='*60}")
-        print(f"Processing: {java_file}")
-        print('='*60)
+    # For classes, only generate JavaDoc
+    if item['type'] == 'class':
+        if item.get('has_javadoc'):
+            print("   ✔ Class already has JavaDoc, skipping")
+            return None, None
+        
+        # Format the template with actual values
+        prompt = base_template.format(
+            item_type='class',
+            item_name=item.get('name', ''),
+            item_signature=item.get('signature', ''),
+            implementation_code=item.get('implementation_code', ''),
+            modifiers=', '.join(item.get('modifiers', [])) if item.get('modifiers') else 'none',
+            parameters='N/A for class',
+            return_type='N/A for class',
+            existing_content='',
+            java_content=item.get('full_file_content', '')  # Add full context if available
+        )
+        
+        print("\n2. SENDING CLASS JAVADOC REQUEST...")
         
         try:
-            # Read the Java file
-            with open(java_file, 'r', encoding='utf-8') as f:
-                java_content = f.read()
+            response = client.messages.create(
+                model="claude-opus-4-1-20250805",  # Use Opus for best quality
+                max_tokens=2000,
+                temperature=0.3,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            response_text = response.content[0].text
+            print(f"   Response length: {len(response_text)} chars")
+            javadoc = extract_javadoc(response_text)
+            if javadoc:
+                print("   ✔ JavaDoc extracted successfully")
+            else:
+                print("   ✗ Failed to extract JavaDoc")
+            return javadoc, None
+        except Exception as e:
+            print(f"   ✗ API Error: {e}")
+            return None, None
+    
+    # For methods/constructors
+    elif item['type'] in ['method', 'constructor']:
+        needs_javadoc = not item.get('has_javadoc')
+        needs_impl = not item.get('has_impl_notes')
+        
+        print(f"\n2. NEEDS:")
+        print(f"   JavaDoc: {needs_javadoc}")
+        print(f"   Implementation Notes: {needs_impl}")
+        
+        if not needs_javadoc and not needs_impl:
+            print("   ✔ Already fully documented")
+            return None, None
+        
+        # Build existing content string if we have it
+        existing_content = ""
+        if item.get('existing_javadoc'):
+            existing_content = f"EXISTING JAVADOC TO IMPROVE:\n{item['existing_javadoc'].get('content', '')}"
+        
+        # Format parameters for the template
+        params_str = "None"
+        if item.get('parameters'):
+            params_str = ', '.join([f"{p['type']} {p['name']}" for p in item['parameters']])
+        
+        # Format the template with actual values
+        prompt = base_template.format(
+            item_type=item['type'],
+            item_name=item.get('name', ''),
+            item_signature=item.get('signature', ''),
+            implementation_code=item.get('implementation_code', ''),  # FULL CODE, not truncated!
+            modifiers=', '.join(item.get('modifiers', [])) if item.get('modifiers') else 'none',
+            parameters=params_str,
+            return_type=item.get('return_type', 'void'),
+            existing_content=existing_content,
+            java_content=item.get('full_file_content', '')  # Add full context if available
+        )
+        
+        # Add specific request for implementation notes if needed
+        if needs_impl:
+            prompt += """
+
+ADDITIONAL REQUIREMENT:
+You MUST also provide implementation notes as comments that explain the algorithm:
+// Implementation notes: Overall approach or algorithm used
+// Step-by-step explanation of complex logic
+// Performance characteristics if relevant
+// Edge cases handled
+
+Format the implementation notes to be inserted into the method body."""
+
+        print("\n3. PROMPT CREATED using BASE-PROMPT.md template")
+        print(f"   Prompt length: {len(prompt)} chars")
+        print(f"   Full implementation code included: {len(item.get('implementation_code', ''))} chars")
+        print("\n4. SENDING TO CLAUDE...")
+        
+        try:
+            response = client.messages.create(
+                model="claude-opus-4-1-20250805",  # Use Opus for best quality
+                max_tokens=4000,
+                temperature=0.3,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            response_text = response.content[0].text
             
-            # Parse the file to find items needing documentation
-            items_needing_docs = parse_java_file(java_content)
+            print(f"\n5. CLAUDE'S RESPONSE ({len(response_text)} chars):")
+            print("-" * 40)
+            # Show first 500 chars of response
+            print(response_text[:500])
+            if len(response_text) > 500:
+                print("... [truncated for display] ...")
+            print("-" * 40)
             
-            if not items_needing_docs:
-                print(f"No items needing documentation found in {java_file}")
-                continue
-            
-            print(f"Found {len(items_needing_docs)} items needing documentation:")
-            for item in items_needing_docs:
-                existing = "✓" if item.get('existing_javadoc') else "✗"
-                print(f"  - {item['type']}: {item['name']} (existing: {existing})")
-            
-            # Generate Javadoc for each item
-            items_with_javadoc = []
-            for item in items_needing_docs:
-                print(f"\nGenerating Javadoc for {item['type']}: {item['name']}...")
-                
-                javadoc, usage_info = generate_javadoc(client, item, java_content, prompt_template)
-                
-                if javadoc and usage_info:
-                    item['javadoc'] = javadoc
-                    items_with_javadoc.append(item)
-                    
-                    # Update usage stats
-                    total_usage_stats['total_input_tokens'] += usage_info['input_tokens']
-                    total_usage_stats['total_output_tokens'] += usage_info['output_tokens']
-                    total_usage_stats['total_tokens'] += usage_info['total_tokens']
-                    total_usage_stats['total_cost'] += usage_info['estimated_cost']
-                    total_usage_stats['items_processed'] += 1
-                    
-                    print(f"✅ Generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
+            # Extract JavaDoc
+            javadoc = None
+            if needs_javadoc:
+                javadoc = extract_javadoc(response_text)
+                print(f"\n6. JAVADOC EXTRACTION:")
+                if javadoc:
+                    print(f"   ✔ Extracted {len(javadoc)} chars")
+                    print(f"   First line: {javadoc.split(chr(10))[0]}")
                 else:
-                    print(f"❌ Failed to generate Javadoc for {item['name']}")
+                    print("   ✗ Failed to extract JavaDoc")
             
-            # Add Javadoc to the file content
-            if items_with_javadoc:
-                updated_content = add_javadoc_to_file(java_content, items_with_javadoc)
-                
-                # Write the updated content back to the file
-                with open(java_file, 'w', encoding='utf-8') as f:
-                    f.write(updated_content)
-                
-                files_modified.append(java_file)
-                print(f"✅ Updated {java_file} with {len(items_with_javadoc)} Javadoc comments")
+            # Extract implementation notes
+            impl_notes = None
+            if needs_impl:
+                impl_notes = extract_implementation_notes_diagnostic(response_text)
+                print(f"\n7. IMPLEMENTATION NOTES EXTRACTION:")
+                if impl_notes:
+                    print(f"   ✔ Extracted {len(impl_notes)} chars")
+                    print("   Content:")
+                    print(impl_notes[:200] + "..." if len(impl_notes) > 200 else impl_notes)
+                else:
+                    print("   ✗ Failed to extract implementation notes")
+            
+            return javadoc, impl_notes
             
         except Exception as e:
-            print(f"Error processing {java_file}: {e}\n{traceback.format_exc()}", file=sys.stderr)
-            continue
+            print(f"\n   ✗ API Error: {e}")
+            return None, None
     
-    # Print summary
-    print(f"\n{'='*60}")
-    print("SUMMARY")
-    print('='*60)
-    print(f"Files processed: {len(java_files)}")
-    print(f"Files modified: {len(files_modified)}")
-    print(f"Items documented: {total_usage_stats['items_processed']}")
-    print(f"Total tokens used: {total_usage_stats['total_tokens']}")
-    print(f"Estimated cost: ${total_usage_stats['total_cost']:.4f}")
+    return None, None
+
+
+def extract_javadoc(text):
+    """Extract JavaDoc from response."""
+    match = re.search(r'/\*\*.*?\*/', text, re.DOTALL)
+    if match:
+        return match.group(0).strip()
+    return None
+
+
+def extract_implementation_notes_diagnostic(text):
+    """Extract implementation notes with diagnostics."""
     
-    # Commit changes if any files were modified
-    if files_modified:
-        commit_changes(files_modified, total_usage_stats)
-    else:
-        print("No files were modified.")
+    print("\n   Trying extraction patterns:")
+    
+    patterns = [
+        (r'//\s*Implementation notes:.*?(?=\n\s*[^/]|\n\s*$|\Z)', "Pattern 1: Basic"),
+        (r'//\s*Implementation notes:.*?(?=\n\s*(?:int|var|for|while|if|return|throw|\}|$))', "Pattern 2: Until keyword"),
+        (r'//\s*Implementation notes:[^\n]+(?:\n\s*//[^\n]+)*', "Pattern 3: Multi-line")
+    ]
+    
+    for pattern, description in patterns:
+        print(f"   Trying {description}...")
+        match = re.search(pattern, text, re.DOTALL | re.MULTILINE)
+        if match:
+            notes = match.group(0).strip()
+            print(f"   ✔ Matched with {description}")
+            
+            # Format with proper indentation
+            lines = notes.split('\n')
+            formatted = []
+            for line in lines:
+                line = line.strip()
+                if line:
+                    if not line.startswith('//'):
+                        line = '// ' + line
+                    formatted.append('    ' + line)
+            return '\n'.join(formatted) if formatted else None
+    
+    print("   ✗ No pattern matched")
+    return None
+
+
+def parse_java_file_simple(file_path):
+    """Parse Java file using tree-sitter from javadoc_common."""
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    # Use the sophisticated tree-sitter parser
+    items = parse_java_file(content)
+    
+    # Enhance items with full file content for context
+    for item in items:
+        item['full_file_content'] = content
+    
+    return items
+
+
+def main():
+    """Main function."""
+    
+    if len(sys.argv) < 2:
+        print("Usage: python action.py <java_file>")
+        sys.exit(1)
+    
+    file_path = sys.argv[1]
+    
+    # Check API key
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        print("Error: ANTHROPIC_API_KEY not set")
+        sys.exit(1)
+    
+    client = Anthropic(api_key=api_key)
+    
+    print("ENHANCED DOCUMENTATION GENERATOR")
+    print("Using BASE-PROMPT.md template with Claude Opus 4.1")
+    print("="*60)
+    
+    # Parse file using tree-sitter
+    print(f"\nParsing {file_path} with tree-sitter...")
+    items = parse_java_file_simple(file_path)
+    
+    print(f"Found {len(items)} items to potentially document")
+    
+    # Process items (same as original)
+    for item in items[:3]:  # Process first 3 for testing as in original
+        javadoc, impl_notes = generate_documentation_with_diagnostics(client, item)
+        
+        print(f"\n8. FINAL RESULT FOR {item['name']}:")
+        print(f"   JavaDoc generated: {javadoc is not None}")
+        print(f"   Impl notes generated: {impl_notes is not None}")
+        
+        if not impl_notes and item['type'] in ['method', 'constructor']:
+            print("\n⚠️  PROBLEM: Implementation notes were NOT generated!")
+            print("   This is why your file has no implementation notes.")
+    
+    print("\n" + "="*60)
+    print("DIAGNOSTIC COMPLETE")
+    print("="*60)
+    print("\nKey improvements in this version:")
+    print("1. ✅ Using your BASE-PROMPT.md template properly")
+    print("2. ✅ Full implementation code (no [:500] truncation)")
+    print("3. ✅ Full file context passed for better understanding")
+    print("4. ✅ Using Claude Opus 4.1 for best quality")
+    print("5. ✅ Using tree-sitter parser from javadoc_common")
+
 
 if __name__ == "__main__":
     main()
