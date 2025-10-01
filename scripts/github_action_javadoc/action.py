@@ -120,7 +120,7 @@ def generate_javadoc(client, item, java_content, prompt_template=None):
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-opus-4-1-2025080",
             max_tokens=1000,
             messages=[{"role": "user", "content": prompt}]
         )
