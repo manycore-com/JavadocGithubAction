@@ -115,13 +115,13 @@ def generate_javadoc(client, item, java_content, prompt_template=None):
         return_type=item.get('return_type', ''),
         implementation_code=item.get('implementation_code', ''),
         existing_content=existing_content,
-        java_content=java_content[:2000]  # Limit context size
+        java_content=java_content 
     )
 
     try:
         response = client.messages.create(
             model="claude-opus-4-1-2025080",
-            max_tokens=1000,
+            max_tokens=5000,
             messages=[{"role": "user", "content": prompt}]
         )
         
@@ -133,7 +133,7 @@ def generate_javadoc(client, item, java_content, prompt_template=None):
             'input_tokens': response.usage.input_tokens,
             'output_tokens': response.usage.output_tokens,
             'total_tokens': response.usage.input_tokens + response.usage.output_tokens,
-            'estimated_cost': (response.usage.input_tokens * 0.000003) + (response.usage.output_tokens * 0.000015)
+            'estimated_cost': (response.usage.input_tokens * 0.000015) + (response.usage.output_tokens * 0.000075)
         }
         
         return javadoc, usage_info
