@@ -16,50 +16,64 @@ This file contains the core prompt template used by the Javadoc generation scrip
 ## Base Prompt Template
 
 ```
-You are a Javadoc generator. Generate documentation for this Java {item_type}:
+Generate documentation for the following Java {item_type}.
 
+ITEM DETAILS:
 Name: {item_name}
 Signature: {item_signature}
+Modifiers: {modifiers}
+Parameters: {parameters}
+Return Type: {return_type}
 
-IMPLEMENTATION CODE:
+ACTUAL CODE TO DOCUMENT:
 {implementation_code}
 
 {existing_content}
 
-REQUIRED OUTPUT:
-Generate exactly TWO things:
-1. A complete Javadoc comment block (/** ... */)
-2. Implementation notes as comments inside the method/class body
+FULL FILE CONTEXT:
+{java_content}
+
+INSTRUCTIONS:
+Generate TWO separate documentation blocks:
+
+1. A Javadoc comment (/** ... */) that describes WHAT the code does
+   - Focus on the contract/API from a user's perspective
+   - Include @param, @return, @throws tags as appropriate
+   - NO implementation details - just the public contract
+
+2. An implementation notes comment (/* AI Implementation Notes: ... */) for methods/constructors
+   - Explain HOW the code works internally
+   - Include algorithm details, data structures, complexity analysis
+   - Describe state changes, edge cases, important logic flow
+   - This serves as a "state dump" for AI systems
 
 OUTPUT FORMAT:
+For classes, generate ONLY the Javadoc:
 /**
- * [Javadoc describing the contract/behavior]
- * @param [if applicable]
- * @return [if applicable]
- * @throws [if applicable]
+ * [Description of what this class represents]
+ * [Additional details about the class purpose and usage]
  */
-public [type] methodName(...) {{
-    // Implementation notes: [Explain how the code works internally]
-    // [Continue on multiple lines if needed, each starting with //]
-}}
 
-[Rest of your rules here...]
-
-EXAMPLE:
+For methods and constructors, generate BOTH blocks:
 /**
- * Merges slots from a partial stack into the final stack with proper offset adjustment.
- * Adds all slots from the new partial stack to the final stack, adjusting their positions
- * to avoid conflicts with existing slots.
- *
- * @param finalStack the target stack to merge into (modified in place)
- * @param newPartialStack the source stack containing slots to add
- * @throws NotImplementedException if any slot in newPartialStack has a negative slot number
+ * [Description of what this method/constructor does]
+ * [Additional details about behavior/contract]
+ * 
+ * @param paramName parameter description for users
+ * @return what is returned to the caller
+ * @throws ExceptionType when this exception is thrown
  */
-public static void merge(Set<Slot> finalStack, Set<Slot> newPartialStack) {{
-    // Implementation notes: Calculates offset by finding max slot in finalStack, then adds 1.
-    // Iterates through newPartialStack, validates no negative slots (throws if found),
-    // then creates new Slot objects with adjusted positions (original + offset) and adds
-    // them to finalStack. The FIXME comment suggests offset calculation may be redundant
-    // in some cases but is kept for safety.
-}}
+/* AI Implementation Notes:
+ * [Detailed explanation of HOW it works internally]
+ * [Algorithm steps, data structures used, complexity analysis]
+ * [State changes, edge cases handled, important logic flow]
+ */
+
+IMPORTANT:
+- Output ONLY these documentation blocks, nothing else
+- Do NOT include method signatures or code
+- Keep Javadoc focused on WHAT (the contract)
+- Keep implementation notes focused on HOW (the internals)
+- For classes, only generate Javadoc (no implementation notes)
+- For methods/constructors, generate both blocks as shown above
 ```

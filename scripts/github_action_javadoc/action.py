@@ -86,7 +86,7 @@ def commit_changes(files_modified, total_usage_stats=None):
         print(f"Error committing changes: {e}", file=sys.stderr)
 
 def generate_javadoc(client, item, java_content, prompt_template=None):
-    """Generate Javadoc comment using Claude API."""
+    """Generate Javadoc comment and implementation notes using Claude API."""
     if prompt_template is None:
         prompt_template = load_prompt_template()
 
@@ -120,13 +120,14 @@ def generate_javadoc(client, item, java_content, prompt_template=None):
 
     try:
         response = client.messages.create(
-            model="claude-opus-4-1-2025080",
+            model="claude-opus-4-1-20250805",
             max_tokens=5000,
             messages=[{"role": "user", "content": prompt}]
         )
         
-        # Extract just the Javadoc from the response
-        javadoc = extract_javadoc_from_response(response.content[0].text)
+        # Extract both Javadoc and implementation notes from the response
+        # The function now returns a dict with 'javadoc' and 'implementation_notes'
+        extracted_content = extract_javadoc_from_response(response.content[0].text)
         
         # Calculate usage stats
         usage_info = {
@@ -136,7 +137,7 @@ def generate_javadoc(client, item, java_content, prompt_template=None):
             'estimated_cost': (response.usage.input_tokens * 0.000015) + (response.usage.output_tokens * 0.000075)
         }
         
-        return javadoc, usage_info
+        return extracted_content, usage_info
         
     except Exception as e:
         print(f"Error generating Javadoc for {item['name']}: {e}", file=sys.stderr)
@@ -152,18 +153,6 @@ def get_credits_info(client):
         print(f"Warning: Could not get credits info: {e}", file=sys.stderr)
         return None
 
-def main():
-    """Main entry point for GitHub Action."""
-    # Get API key from environment
-    api_key = os.environ.get('ANTHROPIC_API_KEY')
-    if not api_key:
-        print("Error: ANTHROPIC_API_KEY environment variable is required", file=sys.stderr)
-        sys.exit(1)
-    
-    # Initialize Claude client
-    client = Anthropic(api_key=api_key)
-    
-    
 def main(single_file=None):
     """
     Main entry point.
@@ -176,7 +165,6 @@ def main(single_file=None):
     # Determine mode
     if single_file:
         # Single file debug mode
-
         java_files = [single_file]
         commit_after = False
         
@@ -204,7 +192,6 @@ def main(single_file=None):
     client = Anthropic(api_key=api_key)
     # Load prompt template once
     prompt_template = load_prompt_template()
-    #import pdb;pdb.set_trace()
     
     # Initialize usage tracking
     total_usage_stats = {
@@ -243,7 +230,7 @@ def main(single_file=None):
             
             print(f"Found {len(items_needing_docs)} items needing documentation:")
             for item in items_needing_docs:
-                existing = "✓" if item.get('existing_javadoc') else "✗"
+                existing = "✔" if item.get('existing_javadoc') else "✗"
                 print(f"  - {item['type']}: {item['name']} (existing: {existing})")
             
             # Generate Javadoc for each item
@@ -251,10 +238,12 @@ def main(single_file=None):
             for item in items_needing_docs:
                 print(f"\nGenerating Javadoc for {item['type']}: {item['name']}...")
                 
-                javadoc, usage_info = generate_javadoc(client, item, java_content, prompt_template)
+                # generate_javadoc now returns a dict with javadoc and implementation_notes
+                doc_content, usage_info = generate_javadoc(client, item, java_content, prompt_template)
                 
-                if javadoc and usage_info:
-                    item['javadoc'] = javadoc
+                if doc_content and usage_info:
+                    # Store the entire dict (with both javadoc and implementation_notes)
+                    item['javadoc'] = doc_content
                     items_with_javadoc.append(item)
                     
                     # Update usage stats
@@ -264,7 +253,10 @@ def main(single_file=None):
                     total_usage_stats['total_cost'] += usage_info['estimated_cost']
                     total_usage_stats['items_processed'] += 1
                     
-                    print(f"✅ Generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
+                    # Show if implementation notes were generated
+                    has_impl_notes = doc_content.get('implementation_notes') if isinstance(doc_content, dict) else False
+                    impl_status = " (with implementation notes)" if has_impl_notes else ""
+                    print(f"✅ Generated{impl_status} ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
                 else:
                     print(f"❌ Failed to generate Javadoc for {item['name']}")
             
@@ -294,9 +286,11 @@ def main(single_file=None):
     print(f"Estimated cost: ${total_usage_stats['total_cost']:.4f}")
     
     # Commit changes if any files were modified
-    if files_modified and not single_file:
+    if files_modified and commit_after:
         commit_changes(files_modified, total_usage_stats)
-    elif not single_file:
+    elif not commit_after and files_modified:
+        print(f"\n✅ Successfully modified {len(files_modified)} file(s) in debug mode (no commit)")
+    elif not files_modified:
         print("No files were modified.")
 
 if __name__ == "__main__":
