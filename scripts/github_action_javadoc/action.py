@@ -4,6 +4,7 @@ import os
 import sys
 import subprocess
 import traceback
+import re
 from anthropic import Anthropic
 
 # Import common functionality
@@ -40,6 +41,27 @@ def get_changed_java_files():
     except subprocess.CalledProcessError as e:
         print(f"Error getting changed files: {e}", file=sys.stderr)
         return []
+
+def strip_javadoc_and_ai_comments(java_content):
+    """
+    Remove all Javadoc comments and AI implementation comments from Java content.
+    This is used in regenerate mode to force regeneration of all documentation.
+    """
+    # Remove Javadoc comments (/** ... */)
+    # This regex handles multi-line javadoc comments
+    java_content = re.sub(r'/\*\*.*?\*/', '', java_content, flags=re.DOTALL)
+    
+    # Remove AI implementation comments (// AI Implementation: ...)
+    # These are typically single-line comments starting with "// AI Implementation:"
+    java_content = re.sub(r'//\s*AI\s+Implementation:.*?(?=\n)', '', java_content, flags=re.IGNORECASE)
+    
+    # Also remove any standalone AI implementation block comments if they exist
+    java_content = re.sub(r'/\*\s*AI\s+Implementation:.*?\*/', '', java_content, flags=re.DOTALL | re.IGNORECASE)
+    
+    # Clean up any excessive blank lines left behind (more than 2 consecutive)
+    java_content = re.sub(r'\n{3,}', '\n\n', java_content)
+    
+    return java_content
 
 def commit_changes(files_modified, total_usage_stats=None):
     """Commit the changes made to Java files with cost information."""
@@ -85,7 +107,7 @@ def commit_changes(files_modified, total_usage_stats=None):
     except subprocess.CalledProcessError as e:
         print(f"Error committing changes: {e}", file=sys.stderr)
 
-def generate_javadoc(client, item, java_content, prompt_template=None):
+def generate_javadoc(client, item, java_content, prompt_template=None, regenerate_all=False):
     """Generate Javadoc comment and implementation notes using Claude API."""
     if prompt_template is None:
         prompt_template = load_prompt_template()
@@ -101,7 +123,8 @@ def generate_javadoc(client, item, java_content, prompt_template=None):
 
     # Prepare existing content
     existing_content = ""
-    if item.get('existing_javadoc'):
+    # In regenerate_all mode, we don't pass existing content to get fresh documentation
+    if not regenerate_all and item.get('existing_javadoc'):
         existing_javadoc_content = item['existing_javadoc']['content']
         existing_content = f"EXISTING JAVADOC TO PRESERVE/IMPROVE:\n{existing_javadoc_content}"
 
@@ -162,21 +185,26 @@ def main(single_file=None):
                     If None, runs in GitHub Action mode.
     """
     
-    # Determine mode
+    # Determine mode and regeneration setting
+    regenerate_all = False
     if single_file:
-        # Single file debug mode
+        # Single file debug mode - regenerate ALL documentation
         java_files = [single_file]
         commit_after = False
+        regenerate_all = True  # Force regeneration in command line mode
         
         # Check if file exists
         if not os.path.exists(single_file):
             print(f"Error: File {single_file} does not exist", file=sys.stderr)
             sys.exit(1)
+        
+        print("🔄 Running in REGENERATE ALL mode - all existing documentation will be replaced")
             
     else:
-        # GitHub Action mode
+        # GitHub Action mode - only update missing/improve existing
         java_files = get_changed_java_files()
         commit_after = True
+        regenerate_all = False
         
         if not java_files:
             print("No Java files found in PR changes.")
@@ -200,6 +228,7 @@ def main(single_file=None):
         'total_tokens': 0,
         'total_cost': 0.0,
         'items_processed': 0,
+        'items_regenerated': 0,
         'credits_info': None
     }
     
@@ -219,27 +248,57 @@ def main(single_file=None):
         try:
             # Read the Java file
             with open(java_file, 'r', encoding='utf-8') as f:
-                java_content = f.read()
+                original_java_content = f.read()
+            
+            # Store item counts for tracking regeneration
+            items_regenerated = 0
             
             # Parse the file to find items needing documentation
-            items_needing_docs = parse_java_file(java_content)
+            if regenerate_all:
+                print("🗑️  Stripping existing Javadoc and AI implementation comments...")
+                # Strip all existing documentation before parsing
+                stripped_content = strip_javadoc_and_ai_comments(original_java_content)
+                
+                # Parse the stripped content to find ALL items (they'll all appear as needing docs now)
+                items_needing_docs = parse_java_file(stripped_content)
+                
+                # Count how many items originally had docs (for reporting)
+                original_items = parse_java_file(original_java_content)
+                items_regenerated = len(original_items) - len(items_needing_docs)
+                
+                # Use the original content for context when generating docs
+                java_content_for_generation = original_java_content
+            else:
+                # Normal mode - only items without docs or needing improvement
+                items_needing_docs = parse_java_file(original_java_content)
+                java_content_for_generation = original_java_content
             
             if not items_needing_docs:
                 print(f"No items needing documentation found in {java_file}")
                 continue
             
-            print(f"Found {len(items_needing_docs)} items needing documentation:")
+            action_word = "regenerate" if regenerate_all else "document"
+            print(f"Found {len(items_needing_docs)} items to {action_word}:")
             for item in items_needing_docs:
-                existing = "✔" if item.get('existing_javadoc') else "✗"
-                print(f"  - {item['type']}: {item['name']} (existing: {existing})")
+                print(f"  - {item['type']}: {item['name']}")
+            
+            if regenerate_all and items_regenerated > 0:
+                print(f"  (Note: Regenerating documentation for all {len(items_needing_docs)} items)")
             
             # Generate Javadoc for each item
             items_with_javadoc = []
             for item in items_needing_docs:
-                print(f"\nGenerating Javadoc for {item['type']}: {item['name']}...")
+                action = "Regenerating" if regenerate_all else "Generating"
+                print(f"\n{action} Javadoc for {item['type']}: {item['name']}...")
                 
                 # generate_javadoc now returns a dict with javadoc and implementation_notes
-                doc_content, usage_info = generate_javadoc(client, item, java_content, prompt_template)
+                doc_content, usage_info = generate_javadoc(
+                    client, 
+                    item, 
+                    java_content_for_generation,  # Use original content for context
+                    prompt_template,
+                    regenerate_all=regenerate_all
+                )
                 
                 if doc_content and usage_info:
                     # Store the entire dict (with both javadoc and implementation_notes)
@@ -253,23 +312,33 @@ def main(single_file=None):
                     total_usage_stats['total_cost'] += usage_info['estimated_cost']
                     total_usage_stats['items_processed'] += 1
                     
+                    if regenerate_all:
+                        total_usage_stats['items_regenerated'] += 1
+                    
                     # Show if implementation notes were generated
                     has_impl_notes = doc_content.get('implementation_notes') if isinstance(doc_content, dict) else False
                     impl_status = " (with implementation notes)" if has_impl_notes else ""
-                    print(f"✅ Generated{impl_status} ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
+                    print(f"✅ {action} complete{impl_status} ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
                 else:
                     print(f"❌ Failed to generate Javadoc for {item['name']}")
             
             # Add Javadoc to the file content
             if items_with_javadoc:
-                updated_content = add_javadoc_to_file(java_content, items_with_javadoc)
+                # When regenerating, we work with the stripped content
+                if regenerate_all:
+                    # Add docs to the stripped version
+                    updated_content = add_javadoc_to_file(stripped_content, items_with_javadoc)
+                else:
+                    # Add docs to the original version
+                    updated_content = add_javadoc_to_file(original_java_content, items_with_javadoc)
                 
                 # Write the updated content back to the file
                 with open(java_file, 'w', encoding='utf-8') as f:
                     f.write(updated_content)
                 
                 files_modified.append(java_file)
-                print(f"✅ Updated {java_file} with {len(items_with_javadoc)} Javadoc comments")
+                action = "regenerated" if regenerate_all else "added/updated"
+                print(f"✅ Updated {java_file} with {len(items_with_javadoc)} {action} Javadoc comments")
             
         except Exception as e:
             print(f"Error processing {java_file}: {e}\n{traceback.format_exc()}", file=sys.stderr)
@@ -279,9 +348,12 @@ def main(single_file=None):
     print(f"\n{'='*60}")
     print("SUMMARY")
     print('='*60)
+    print(f"Mode: {'🔄 REGENERATE ALL' if regenerate_all else '📝 Normal (update missing/improve existing)'}")
     print(f"Files processed: {len(java_files)}")
     print(f"Files modified: {len(files_modified)}")
     print(f"Items documented: {total_usage_stats['items_processed']}")
+    if regenerate_all and total_usage_stats['items_regenerated'] > 0:
+        print(f"Items regenerated: {total_usage_stats['items_regenerated']}")
     print(f"Total tokens used: {total_usage_stats['total_tokens']}")
     print(f"Estimated cost: ${total_usage_stats['total_cost']:.4f}")
     
@@ -289,7 +361,8 @@ def main(single_file=None):
     if files_modified and commit_after:
         commit_changes(files_modified, total_usage_stats)
     elif not commit_after and files_modified:
-        print(f"\n✅ Successfully modified {len(files_modified)} file(s) in debug mode (no commit)")
+        mode_desc = "with full regeneration" if regenerate_all else ""
+        print(f"\n✅ Successfully modified {len(files_modified)} file(s) in debug mode {mode_desc} (no commit)")
     elif not files_modified:
         print("No files were modified.")
 
