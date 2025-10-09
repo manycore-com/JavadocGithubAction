@@ -446,6 +446,71 @@ def get_credits_info(client):
         print(f"Warning: Could not get credits info: {e}", file=sys.stderr)
         return None
 
+def get_all_documentable_items(java_content, file_path):
+    """
+    Get ALL items that could have documentation, regardless of whether
+    they currently have Javadoc or not.
+    
+    This is needed for smart regeneration to check already-documented items.
+    """
+    # Temporarily strip all Javadoc and AI comments to find all items
+    temp_content = strip_javadoc_and_ai_comments(java_content)
+    
+    # Parse the stripped version to get ALL items
+    all_items = parse_java_file(temp_content)
+    
+    # Now we need to find their existing documentation in the original content
+    for item in all_items:
+        # Build a regex pattern to find this item in the original content
+        # We need to be careful to match the right instance
+        
+        # For methods, look for the method signature
+        if item['type'] == 'method':
+            # Create a pattern that matches the method signature
+            method_pattern = rf'''
+                (?P<javadoc>/\*\*.*?\*/)?  # Optional Javadoc
+                \s*
+                (?P<impl_comment>(?://.*AI\s+Implementation.*\n(?://.*\n)*)?)  # Optional AI comment
+                \s*
+                (?P<modifiers>(?:public|private|protected|static|final|abstract|\s)+)?
+                \s+
+                {re.escape(item.get('return_type', 'void'))}
+                \s+
+                {re.escape(item['name'])}
+                \s*
+                \(
+            '''
+            
+            match = re.search(method_pattern, java_content, re.VERBOSE | re.DOTALL)
+            if match:
+                if match.group('javadoc'):
+                    item['existing_javadoc'] = {'content': match.group('javadoc')}
+                if match.group('impl_comment'):
+                    item['existing_implementation_comment'] = match.group('impl_comment').strip()
+        
+        # For classes, similar approach
+        elif item['type'] == 'class':
+            class_pattern = rf'''
+                (?P<javadoc>/\*\*.*?\*/)?  # Optional Javadoc
+                \s*
+                (?P<impl_comment>(?://.*AI\s+Implementation.*\n(?://.*\n)*)?)  # Optional AI comment  
+                \s*
+                (?P<modifiers>(?:public|private|protected|abstract|final|\s)+)?
+                \s+
+                class
+                \s+
+                {re.escape(item['name'])}
+            '''
+            
+            match = re.search(class_pattern, java_content, re.VERBOSE | re.DOTALL)
+            if match:
+                if match.group('javadoc'):
+                    item['existing_javadoc'] = {'content': match.group('javadoc')}
+                if match.group('impl_comment'):
+                    item['existing_implementation_comment'] = match.group('impl_comment').strip()
+    
+    return all_items
+
 def main(single_file=None):
     """
     Main entry point.
@@ -556,39 +621,41 @@ def main(single_file=None):
                 java_content_for_generation = original_java_content
             else:
                 # Normal/Smart mode - parse to find what needs work
-                items_needing_docs = parse_java_file(original_java_content)
+                if smart_regeneration:
+                    # For smart mode, we need ALL items (including already documented ones)
+                    print("📋 Analyzing all items for changes...")
+                    all_items = get_all_documentable_items(original_java_content, java_file)
+                    print(f"Found {len(all_items)} total items to analyze")
+                    
+                    items_to_process = []
+                    for item in all_items:
+                        # Check if this item needs regeneration
+                        if item.get('existing_javadoc') or item.get('existing_implementation_comment'):
+                            should_regen, reason = should_regenerate_documentation(item, java_file)
+                            
+                            if should_regen:
+                                print(f"  ✅ {item['type']}: {item['name']} - {reason}")
+                                items_to_process.append(item)
+                            else:
+                                print(f"  ⏭️  {item['type']}: {item['name']} - SKIPPED: {reason}")
+                                total_usage_stats['items_skipped'] += 1
+                        else:
+                            # No existing docs, needs initial documentation
+                            print(f"  ✅ {item['type']}: {item['name']} - No existing documentation")
+                            items_to_process.append(item)
+                    
+                    items_needing_docs = items_to_process
+                else:
+                    # Normal mode - just find items without docs
+                    items_needing_docs = parse_java_file(original_java_content)
+                
                 java_content_for_generation = original_java_content
             
-            if not items_needing_docs and not smart_regeneration:
+            if not items_needing_docs:
                 print(f"No items needing documentation found in {java_file}")
-                continue
-            
-            # In smart regeneration mode, check each item for meaningful changes
-            if smart_regeneration and not regenerate_all:
-                items_to_process = []
-                for item in items_needing_docs:
-                    should_regen, reason = should_regenerate_documentation(item, java_file)
-                    
-                    if should_regen:
-                        print(f"  ✅ {item['type']}: {item['name']} - {reason}")
-                        items_to_process.append(item)
-                    else:
-                        print(f"  ⏭️  {item['type']}: {item['name']} - SKIPPED: {reason}")
-                        total_usage_stats['items_skipped'] += 1
-                
-                items_needing_docs = items_to_process
-                
-                if not items_needing_docs:
-                    print(f"No items need regeneration in {java_file} (all changes were trivial)")
-                    continue
-            else:
-                action_word = "regenerate" if regenerate_all else "document"
-                print(f"Found {len(items_needing_docs)} items to {action_word}:")
-                for item in items_needing_docs:
-                    print(f"  - {item['type']}: {item['name']}")
-            
-            if regenerate_all and items_regenerated > 0:
-                print(f"  (Note: Regenerating documentation for all {len(items_needing_docs)} items)")
+                if smart_regeneration:
+                    print("(All items either have unchanged code or only trivial changes)")
+                continue  # This continue is OK because we're in the for loop
             
             # Generate Javadoc for each item
             items_with_javadoc = []
