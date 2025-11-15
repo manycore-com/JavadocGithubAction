@@ -17,6 +17,16 @@ from javadoc_common import (
     add_javadoc_to_file
 )
 
+
+def load_audit_prompt_template():
+    """Load the audit prompt template from audit_prompt.txt file."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    prompt_file = os.path.join(script_dir, 'audit_prompt.txt')
+    
+    with open(prompt_file, 'r', encoding='utf-8') as f:
+        return f.read()
+
+
 def get_current_git_hash():
     """Get the current git commit hash (short version)."""
     try:
@@ -166,7 +176,6 @@ def get_method_code_changes(item, file_path, since_commit='HEAD~1'):
                 if match:
                     old_start = int(match.group(1))
                     new_start = int(match.group(2))
-                    # We'll check both old and new positions to catch modifications
                 continue
             
             # Skip diff metadata lines
@@ -174,14 +183,11 @@ def get_method_code_changes(item, file_path, since_commit='HEAD~1'):
                 continue
             
             # Check if this change is within our method's range
-            # This is a simplified check - for production you'd want more sophisticated parsing
             if line.startswith('+') or line.startswith('-'):
                 stripped = line[1:].strip()
                 
                 # Ignore comment-only changes and empty lines
                 if stripped and not stripped.startswith('//') and not stripped.startswith('/*') and not stripped.startswith('*'):
-                    # For simplicity, count all non-comment changes
-                    # In production, you'd track line numbers more precisely
                     meaningful_chars_changed += len(stripped)
         
         has_changes = meaningful_chars_changed > 0
@@ -194,7 +200,7 @@ def get_method_code_changes(item, file_path, since_commit='HEAD~1'):
         return True, 0, "Diff analysis failed (assuming changed)"
 
 
-def audit_javadoc(client, item, java_content):
+def audit_javadoc(client, item, java_content, audit_prompt_template):
     """
     LEVEL 2: LLM-based semantic audit of Javadoc accuracy.
     Uses cheaper Sonnet model to check if docs match code.
@@ -203,45 +209,22 @@ def audit_javadoc(client, item, java_content):
         client: Anthropic client
         item: Parsed item dict
         java_content: Full Java file content for context
+        audit_prompt_template: Template string for audit prompt
         
     Returns:
         tuple: (needs_regen: bool, reason: str, confidence: str, usage_info: dict)
     """
-    audit_prompt = f"""You are auditing Javadoc documentation for accuracy.
-
-EXISTING JAVADOC:
-{item['existing_javadoc']['content']}
-
-ACTUAL CODE:
-Type: {item['type']}
-Name: {item['name']}
-Signature: {item.get('signature', '')}
-Implementation:
-{item.get('implementation_code', '')}
-
-TASK: Determine if the Javadoc accurately describes what the code ACTUALLY does.
-
-Check for:
-1. Incorrect descriptions of behavior
-2. Missing parameters or wrong parameter descriptions  
-3. Wrong return type/value descriptions
-4. Missing or incorrect exception documentation
-5. Outdated information (mentions removed functionality)
-6. Contradictions between docs and implementation
-
-Respond ONLY with a JSON object (no markdown, no code blocks):
-{{
-  "accurate": true/false,
-  "confidence": "high/medium/low",
-  "issues": ["list of specific problems found, or empty array if accurate"],
-  "verdict": "ACCURATE|NEEDS_UPDATE|NEEDS_REWRITE"
-}}
-
-IMPORTANT: Output ONLY the JSON, nothing else."""
+    audit_prompt = audit_prompt_template.format(
+        existing_javadoc=item['existing_javadoc']['content'],
+        item_type=item['type'],
+        item_name=item['name'],
+        item_signature=item.get('signature', ''),
+        implementation_code=item.get('implementation_code', '')
+    )
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",  # Sonnet for audit (cheaper than Opus)
+            model="claude-sonnet-4-20250514",
             max_tokens=1000,
             messages=[{"role": "user", "content": audit_prompt}]
         )
@@ -274,7 +257,7 @@ IMPORTANT: Output ONLY the JSON, nothing else."""
         return True, f"Audit error: {str(e)}", "low", None
 
 
-def should_regenerate_item_smart(item, file_path, client, current_git_hash):
+def should_regenerate_item_smart(item, file_path, client, current_git_hash, audit_prompt_template):
     """
     Smart 3-level decision process for Javadoc regeneration:
     
@@ -293,6 +276,7 @@ def should_regenerate_item_smart(item, file_path, client, current_git_hash):
         file_path: Path to Java file
         client: Anthropic client
         current_git_hash: Current git commit hash
+        audit_prompt_template: Template for audit prompt
         
     Returns:
         tuple: (should_regen: bool, mode: str, reason: str, usage_info: dict)
@@ -342,7 +326,8 @@ def should_regenerate_item_smart(item, file_path, client, current_git_hash):
     needs_regen, reason, confidence, usage_info = audit_javadoc(
         client, 
         item, 
-        java_content
+        java_content,
+        audit_prompt_template
     )
     
     if needs_regen:
@@ -353,7 +338,7 @@ def should_regenerate_item_smart(item, file_path, client, current_git_hash):
         return False, 'audit_passed', f"Javadoc accurate despite code changes (confidence: {confidence})", usage_info
 
 
-def generate_javadoc(client, item, java_content, prompt_template=None, regenerate_all=False, git_hash=None):
+def generate_javadoc(client, item, java_content, prompt_template, regenerate_all=False, git_hash=None):
     """
     LEVEL 3: Generate Javadoc using Claude Opus (expensive, high quality).
     Only called after all cheaper checks have determined regeneration is needed.
@@ -369,9 +354,6 @@ def generate_javadoc(client, item, java_content, prompt_template=None, regenerat
     Returns:
         tuple: (javadoc_content: str, usage_info: dict)
     """
-    if prompt_template is None:
-        prompt_template = load_prompt_template()
-
     modifiers = ' '.join(item.get('modifiers', [])) if item.get('modifiers') else 'default'
     parameters = ''
     if item.get('parameters'):
@@ -400,7 +382,7 @@ def generate_javadoc(client, item, java_content, prompt_template=None, regenerat
 
     try:
         response = client.messages.create(
-            model="claude-opus-4-20250514",  # Opus for generation (expensive, high quality)
+            model="claude-opus-4-20250514",
             max_tokens=5000,
             messages=[{"role": "user", "content": prompt}]
         )
@@ -484,3 +466,229 @@ def main(single_file=None):
     Main entry point for Javadoc generation.
     
     Modes:
+    - PR mode (default): Process changed files in PR, auto-commit
+    - Single file mode: Process one file, no commit
+    - Force regenerate: Strip and regenerate all Javadoc (--force-regen)
+    """
+    
+    current_git_hash = get_current_git_hash()
+    print(f"Current git commit: {current_git_hash}")
+    
+    regenerate_all = '--force-regen' in sys.argv
+    
+    if single_file:
+        java_files = [single_file]
+        commit_after = False
+        
+        if regenerate_all:
+            print("🔄 Running in FORCE REGENERATE mode - stripping all existing Javadoc")
+        else:
+            print("🧠 Running in SMART mode - 3-level analysis (structural → code changes → LLM audit)")
+        
+        if not os.path.exists(single_file):
+            print(f"Error: File {single_file} does not exist", file=sys.stderr)
+            sys.exit(1)
+            
+    else:
+        java_files = get_changed_java_files()
+        commit_after = True
+        regenerate_all = False
+        
+        if not java_files:
+            print("No Java files found in PR changes.")
+            return
+        
+        print("🧠 Smart mode - 3-level analysis for changed files")
+   
+    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    if not api_key:
+        print("Error: ANTHROPIC_API_KEY environment variable is required", file=sys.stderr)
+        sys.exit(1)
+    
+    client = Anthropic(api_key=api_key)
+    prompt_template = load_prompt_template()
+    audit_prompt_template = load_audit_prompt_template()
+    
+    # Enhanced statistics tracking
+    total_usage_stats = {
+        'total_input_tokens': 0,
+        'total_output_tokens': 0,
+        'total_tokens': 0,
+        'total_cost': 0.0,
+        
+        'items_total': 0,
+        'items_regenerated': 0,
+        'items_skipped_no_changes': 0,
+        'items_skipped_audit_passed': 0,
+        'items_failed_structural': 0,
+        'items_failed_audit': 0,
+        
+        'audits_performed': 0,
+        'audit_cost': 0.0,
+    }
+    
+    files_modified = []
+    
+    for java_file in java_files:
+        print(f"\n{'='*60}")
+        print(f"Processing: {java_file}")
+        print('='*60)
+        
+        try:
+            with open(java_file, 'r', encoding='utf-8') as f:
+                original_java_content = f.read()
+            
+            # Get items that need documentation
+            if regenerate_all:
+                print("🗑️  Stripping existing Javadoc comments...")
+                stripped_content = strip_javadoc(original_java_content)
+                items_needing_docs = parse_java_file(stripped_content)
+                java_content_for_generation = original_java_content
+                
+                # Mark all items for regeneration
+                for item in items_needing_docs:
+                    total_usage_stats['items_total'] += 1
+                
+            else:
+                # Parse original content to get all items with line numbers intact
+                all_items = parse_java_file(original_java_content)
+                
+                # Apply 3-level smart filtering
+                items_needing_docs = []
+                for item in all_items:
+                    total_usage_stats['items_total'] += 1
+                    
+                    should_regen, mode, reason, audit_usage = should_regenerate_item_smart(
+                        item, 
+                        java_file,
+                        client,
+                        current_git_hash,
+                        audit_prompt_template
+                    )
+                    
+                    # Track audit costs
+                    if audit_usage:
+                        total_usage_stats['audits_performed'] += 1
+                        total_usage_stats['audit_cost'] += audit_usage['estimated_cost']
+                        total_usage_stats['total_input_tokens'] += audit_usage['input_tokens']
+                        total_usage_stats['total_output_tokens'] += audit_usage['output_tokens']
+                        total_usage_stats['total_tokens'] += audit_usage['total_tokens']
+                        total_usage_stats['total_cost'] += audit_usage['estimated_cost']
+                    
+                    if should_regen:
+                        print(f"  ➡️  {item['type']}: {item['name']} - WILL REGENERATE: {reason}")
+                        item['regeneration_mode'] = mode
+                        item['regeneration_reason'] = reason
+                        items_needing_docs.append(item)
+                        
+                        # Track which check failed
+                        if mode == 'structural_fail':
+                            total_usage_stats['items_failed_structural'] += 1
+                        elif mode == 'audit_failed':
+                            total_usage_stats['items_failed_audit'] += 1
+                    else:
+                        print(f"  ⏭️  {item['type']}: {item['name']} - SKIPPED: {reason}")
+                        
+                        # Track which level allowed us to skip
+                        if mode == 'no_code_changes':
+                            total_usage_stats['items_skipped_no_changes'] += 1
+                        elif mode == 'audit_passed':
+                            total_usage_stats['items_skipped_audit_passed'] += 1
+                
+                java_content_for_generation = original_java_content
+            
+            if not items_needing_docs:
+                print(f"✅ No items needing documentation found in {java_file}")
+                continue
+            
+            # Generate Javadoc for each item that needs it
+            items_with_javadoc = []
+            for item in items_needing_docs:
+                action = "Regenerating" if regenerate_all else "Generating"
+                print(f"\n{action} Javadoc for {item['type']}: {item['name']}...")
+                
+                doc_content, usage_info = generate_javadoc(
+                    client, 
+                    item, 
+                    java_content_for_generation,
+                    prompt_template,
+                    regenerate_all=regenerate_all,
+                    git_hash=current_git_hash
+                )
+                
+                if doc_content and usage_info:
+                    item['javadoc'] = doc_content
+                    print(f"    ✅ {action} complete (${usage_info['estimated_cost']:.4f})")
+                    
+                    items_with_javadoc.append(item)
+                    
+                    # Update usage stats (generation costs)
+                    total_usage_stats['total_input_tokens'] += usage_info['input_tokens']
+                    total_usage_stats['total_output_tokens'] += usage_info['output_tokens']
+                    total_usage_stats['total_tokens'] += usage_info['total_tokens']
+                    total_usage_stats['total_cost'] += usage_info['estimated_cost']
+                    total_usage_stats['items_regenerated'] += 1
+                else:
+                    print(f"    ❌ Failed to generate Javadoc for {item['name']}")
+            
+            # Add Javadoc to the file content
+            if items_with_javadoc:
+                updated_content = add_javadoc_to_file(original_java_content, items_with_javadoc)
+                
+                with open(java_file, 'w', encoding='utf-8') as f:
+                    f.write(updated_content)
+                
+                files_modified.append(java_file)
+                action = "regenerated" if regenerate_all else "added/updated"
+                print(f"✅ Updated {java_file} with {len(items_with_javadoc)} {action} Javadoc comments")
+            
+        except Exception as e:
+            print(f"Error processing {java_file}: {e}\n{traceback.format_exc()}", file=sys.stderr)
+            continue
+    
+    # Print detailed summary
+    print(f"\n{'='*60}")
+    print("SUMMARY")
+    print('='*60)
+    
+    mode_desc = "🔄 FORCE REGENERATE" if regenerate_all else "🧠 SMART 3-LEVEL ANALYSIS"
+    print(f"Mode: {mode_desc}")
+    print(f"Files processed: {len(java_files)}")
+    print(f"Files modified: {len(files_modified)}")
+    print()
+    
+    print(f"Items analyzed: {total_usage_stats['items_total']}")
+    print(f"  ✅ Regenerated: {total_usage_stats['items_regenerated']}")
+    
+    if not regenerate_all:
+        print(f"  ⏭️  Skipped (no code changes): {total_usage_stats['items_skipped_no_changes']}")
+        print(f"  ⏭️  Skipped (audit passed): {total_usage_stats['items_skipped_audit_passed']}")
+        print()
+        print("Regeneration triggers:")
+        print(f"  📋 Structural failures: {total_usage_stats['items_failed_structural']}")
+        print(f"  🤖 Audit failures: {total_usage_stats['items_failed_audit']}")
+        print()
+        print(f"LLM audits performed: {total_usage_stats['audits_performed']} (${total_usage_stats['audit_cost']:.4f})")
+    
+    print()
+    print(f"Total tokens used: {total_usage_stats['total_tokens']:,}")
+    print(f"Total API cost: ${total_usage_stats['total_cost']:.4f}")
+    
+    # Commit changes if any files were modified
+    if files_modified and commit_after:
+        commit_changes(files_modified, total_usage_stats)
+    elif not commit_after and files_modified:
+        mode_desc = "with full regeneration" if regenerate_all else "with smart analysis"
+        print(f"\n✅ Successfully modified {len(files_modified)} file(s) {mode_desc} (no commit)")
+    elif not files_modified:
+        print("\n✅ No files were modified - all Javadoc is up to date!")
+
+
+if __name__ == "__main__":
+    single_file = None
+    for arg in sys.argv[1:]:
+        if not arg.startswith('--'):
+            single_file = arg
+            break
+    
+    main(single_file=single_file)
