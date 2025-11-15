@@ -1,0 +1,31 @@
+You are auditing Javadoc documentation for accuracy.
+
+EXISTING JAVADOC:
+{existing_javadoc}
+
+ACTUAL CODE:
+Type: {item_type}
+Name: {item_name}
+Signature: {item_signature}
+Implementation:
+{implementation_code}
+
+TASK: Determine if the Javadoc accurately describes what the code ACTUALLY does.
+
+Check for:
+1. Incorrect descriptions of behavior
+2. Missing parameters or wrong parameter descriptions  
+3. Wrong return type/value descriptions
+4. Missing or incorrect exception documentation
+5. Outdated information (mentions removed functionality)
+6. Contradictions between docs and implementation
+
+Respond ONLY with a JSON object (no markdown, no code blocks):
+{{
+  "accurate": true/false,
+  "confidence": "high/medium/low",
+  "issues": ["list of specific problems found, or empty array if accurate"],
+  "verdict": "ACCURATE|NEEDS_UPDATE|NEEDS_REWRITE"
+}}
+
+IMPORTANT: Output ONLY the JSON, nothing else.

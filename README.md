@@ -1,95 +1,68 @@
 # JavadocGithubAction
 
-An intelligent GitHub Action that automatically generates and maintains Javadoc comments using Claude AI, with smart regeneration to minimize API costs.
+An intelligent GitHub Action that automatically generates and maintains comprehensive Javadoc comments using Claude AI.
 
-## Core Philosophy: Separation of Contract and Implementation
+## Core Philosophy: API Contract Documentation
 
-This tool follows a key principle: **Javadoc documents the contract, not the implementation**.
+This tool focuses on generating comprehensive **Javadoc comments** that document the public API contract:
 
-### What Gets Generated
-
-The tool generates two distinct types of documentation:
-
-#### 1. Javadoc Comments (The Contract)
-Standard Javadoc that documents the **public API contract**:
-- What the method/class does (not how)
-- Parameters and their purpose
-- Return values
+- What the method/class does (not implementation details)
+- Parameters and their purpose  
+- Return values and their meaning
 - Exceptions that can be thrown
 - Usage examples when helpful
+- Cross-references to related classes/methods
 
 ```java
 /**
  * Validates and processes user authentication credentials.
  * 
- * @param username The username to authenticate
- * @param password The password to verify  
- * @return An authenticated session token
- * @throws AuthenticationException if credentials are invalid
- * @throws RateLimitException if too many attempts
+ * This method performs a secure authentication check against the configured
+ * authentication provider and returns a session token for successful logins.
+ * 
+ * @param username The username to authenticate (must not be null or empty)
+ * @param password The password to verify (must not be null)
+ * @return An authenticated session token valid for the current session
+ * @throws AuthenticationException if credentials are invalid or user is locked
+ * @throws RateLimitException if too many authentication attempts have been made
+ * @throws IllegalArgumentException if username or password is null/empty
+ * @see SessionToken
+ * @since 1.0
  */
 public String authenticate(String username, String password) {
     // ... implementation ...
 }
 ```
 
-#### 2. AI Implementation Comments (The How)
-Separate comments that explain **complex implementation details**:
-- Algorithm choices and trade-offs
-- Performance optimizations
-- Why certain approaches were taken
-- Non-obvious technical decisions
+### Why Focus on Javadoc Only
 
-```java
-// AI Implementation: Uses bcrypt with cost factor 12 for password hashing.
-// Implements exponential backoff for rate limiting with Redis backend.
-// Session tokens are JWT with 15-minute expiry, refreshed on each request.
-// Comments AI generated: 2025-01-15T10:00:00Z | Commit: abc123
-```
-
-### Why This Separation Matters
-
-- **Javadoc** is for API users - they need to know what your code does, not how
-- **Implementation comments** are for maintainers - they need to understand the how and why
-- This separation keeps documentation focused and relevant for each audience
+- **API consumers** need clear documentation of what methods do and how to use them
+- **Implementation details** belong in regular code comments written by developers
+- **Javadoc** serves as both documentation and IDE integration for better development experience
+- **Contract focus** ensures documentation remains stable as implementation changes
 
 ## Smart Regeneration System
 
-### The Hash Tracking Mechanism
+The tool includes an intelligent regeneration system that only updates documentation when necessary:
 
-Every AI-generated implementation comment includes metadata:
-```
-// Comments AI generated: 2025-01-15T10:00:00Z | Commit: abc123
-```
+### How It Works
 
-This metadata enables intelligent regeneration:
-1. **Commit Hash**: Links documentation to specific code version
-2. **Timestamp**: Shows when documentation was generated
-3. **Git Diff Analysis**: Detects what changed since last generation
-
-When you run smart regeneration, the tool:
-```bash
-# 1. Checks the embedded commit hash
-# 2. Runs git diff since that commit  
-# 3. Analyzes if changes are meaningful
-# 4. Only regenerates if needed
-```
+1. **Existing Documentation Detection**: Checks if Javadoc already exists for methods and classes
+2. **Quality Assessment**: Evaluates existing Javadoc to determine if it needs improvement
+3. **Selective Processing**: Only processes items that lack documentation or have poor quality docs
 
 ### What Triggers Regeneration
 
-**Meaningful changes** (regenerated):
-- Logic changes
-- New code paths
-- Algorithm modifications
-- Method signature changes
+**Always regenerated**:
+- Methods/classes with no existing Javadoc
+- Javadoc with placeholder content (TODO, FIXME, generic descriptions)
+- Javadoc missing essential tags (@param, @return, @throws)
 
-**Trivial changes** (skipped):
-- Comment additions
-- Whitespace/formatting
-- Moving braces
-- Variable renames (usually)
+**Preserved**:
+- Existing high-quality Javadoc documentation
+- Human-written documentation that follows proper conventions
 
-This approach can reduce API costs by 90-95% in typical development.
+This approach minimizes unnecessary API calls while ensuring comprehensive documentation coverage.
 
 ## Quick Start
 
