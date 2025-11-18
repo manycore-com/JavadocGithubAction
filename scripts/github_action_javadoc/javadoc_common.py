@@ -666,33 +666,37 @@ def extract_javadoc_from_response(response_text):
 def add_javadoc_to_file(java_content, items_with_javadoc):
     """Add generated Javadoc comments to the Java file content."""
     lines = java_content.split('\n')
-    
+
     # Sort items by line number in reverse order to avoid line number shifts
     sorted_items = sorted(items_with_javadoc, key=lambda x: x['line'], reverse=True)
-    
+
     for item in sorted_items:
         if 'javadoc' not in item:
             continue
-        
+
         javadoc = item['javadoc']
         line_num = item['line']
-        
+
         # Handle the Javadoc insertion
         insert_line = line_num - 1  # Convert to 0-indexed
-        
+
         # Check if there's existing Javadoc to replace
         existing_javadoc = item.get('existing_javadoc')
+        old_javadoc_lines = []
         if existing_javadoc:
-            # Remove the existing Javadoc
+            # Save the old Javadoc content before removing
             start_line = existing_javadoc['start_line'] - 1  # Convert to 0-indexed
             end_line = existing_javadoc['end_line'] - 1    # Convert to 0-indexed
-            
+
+            # Store old Javadoc lines for later insertion
+            old_javadoc_lines = lines[start_line:end_line + 1]
+
             # Remove the old Javadoc lines
             del lines[start_line:end_line + 1]
-            
+
             # Adjust insertion point
             insert_line = start_line
-        
+
         # Detect the indentation of the target method/class line
         target_line = lines[insert_line] if insert_line < len(lines) else ""
         indentation = ""
@@ -701,15 +705,28 @@ def add_javadoc_to_file(java_content, items_with_javadoc):
                 indentation += char
             else:
                 break
-        
+
         # Split the Javadoc into lines and apply indentation
         if javadoc:
             javadoc_lines = javadoc.split('\n')
-            
-            # Insert Javadoc at the correct position with proper indentation
-            for i, javadoc_line in enumerate(javadoc_lines):
+            current_insert = insert_line
+
+            # Insert new Javadoc at the correct position with proper indentation
+            for javadoc_line in javadoc_lines:
                 # Apply indentation to each line of the Javadoc
                 indented_line = indentation + javadoc_line if javadoc_line.strip() else javadoc_line
-                lines.insert(insert_line + i, indented_line)
-    
+                lines.insert(current_insert, indented_line)
+                current_insert += 1
+
+            # If there was existing Javadoc, add it below with //OLD prefix
+            if old_javadoc_lines:
+                for old_line in old_javadoc_lines:
+                    # Prefix each line with //OLD
+                    # Preserve original indentation, just add //OLD at the start of the content
+                    stripped = old_line.lstrip()
+                    old_indentation = old_line[:len(old_line) - len(stripped)]
+                    prefixed_line = old_indentation + "//OLD " + stripped
+                    lines.insert(current_insert, prefixed_line)
+                    current_insert += 1
+
     return '\n'.join(lines)

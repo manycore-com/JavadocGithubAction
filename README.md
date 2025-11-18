@@ -64,6 +64,69 @@ The tool includes an intelligent regeneration system that only updates documenta
 
 This approach minimizes unnecessary API calls while ensuring comprehensive documentation coverage.
 
+## Documentation Review Mode
+
+When regenerating existing Javadoc, the tool preserves the old documentation for human review. This allows you to verify that updates are improvements rather than unnecessary changes.
+
+### How It Works
+
+When documentation is regenerated, the output includes:
+1. **New documentation** - The updated Javadoc comment at the top
+2. **Old documentation** - The previous version below, prefixed with `//OLD` on each line
+
+### Example Output
+
+```java
+    /**
+     * Validates and processes user authentication credentials with enhanced security.
+     *
+     * This method performs multi-factor authentication checks and rate limiting
+     * before validating credentials against the configured authentication provider.
+     *
+     * @param username The username to authenticate (must not be null or empty)
+     * @param password The password to verify (must not be null)
+     * @return An authenticated session token valid for 24 hours
+     * @throws AuthenticationException if credentials are invalid or user is locked
+     * @throws RateLimitException if too many authentication attempts have been made
+     * @throws IllegalArgumentException if username or password is null/empty
+     */
+    //OLD /**
+    //OLD  * Validates user credentials.
+    //OLD  *
+    //OLD  * @param username The username
+    //OLD  * @param password The password
+    //OLD  * @return A session token
+    //OLD  * @throws AuthenticationException if credentials are invalid
+    //OLD  */
+    public String authenticate(String username, String password) {
+        // ... implementation ...
+    }
+```
+
+### Benefits
+
+- **Quality Control**: Human reviewers can easily compare old vs new documentation
+- **Audit Trail**: Understand what changed and why
+- **Easy Cleanup**: After review, simply remove the `//OLD` lines you don't need
+- **Non-Breaking**: Old documentation is commented out, so it doesn't affect compilation
+
+### Reviewing Changes
+
+After regeneration, review the changes:
+
+1. **Compare**: Look at the new documentation vs the `//OLD` version
+2. **Evaluate**: Determine if the update improved accuracy and clarity
+3. **Clean Up**: Remove `//OLD` lines once satisfied with the changes
+4. **Revert**: If the new version isn't better, restore from the `//OLD` version
+
+```bash
+# Search for all files with review markers
+grep -r "//OLD" src/
+
+# View changes in a specific file
+cat MyClass.java | grep -A5 -B5 "//OLD"
+```
+
 ## Quick Start
 
 ### Installation
