@@ -14,6 +14,12 @@ from javadoc_common import (
     add_javadoc_to_file
 )
 
+# API Configuration
+CLAUDE_MODEL = "claude-opus-4-1-20250805"
+MAX_TOKENS = 5000
+INPUT_TOKEN_COST = 0.000015   # Cost per input token in USD
+OUTPUT_TOKEN_COST = 0.000075  # Cost per output token in USD
+
 def get_changed_java_files():
     """Get list of Java files changed in the current PR."""
     try:
@@ -120,21 +126,21 @@ def generate_javadoc(client, item, java_content, prompt_template=None):
 
     try:
         response = client.messages.create(
-            model="claude-opus-4-1-20250805",
-            max_tokens=5000,
+            model=CLAUDE_MODEL,
+            max_tokens=MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}]
         )
-        
+
         # Extract both Javadoc and implementation notes from the response
         # The function now returns a dict with 'javadoc' and 'implementation_notes'
         extracted_content = extract_javadoc_from_response(response.content[0].text)
-        
+
         # Calculate usage stats
         usage_info = {
             'input_tokens': response.usage.input_tokens,
             'output_tokens': response.usage.output_tokens,
             'total_tokens': response.usage.input_tokens + response.usage.output_tokens,
-            'estimated_cost': (response.usage.input_tokens * 0.000015) + (response.usage.output_tokens * 0.000075)
+            'estimated_cost': (response.usage.input_tokens * INPUT_TOKEN_COST) + (response.usage.output_tokens * OUTPUT_TOKEN_COST)
         }
         
         return extracted_content, usage_info
@@ -153,48 +159,42 @@ def get_credits_info(client):
         print(f"Warning: Could not get credits info: {e}", file=sys.stderr)
         return None
 
-def main(single_file=None):
+def setup_environment(single_file):
+    """Setup environment and validate configuration.
+
+    Returns:
+        dict: Configuration with java_files, commit_after, and api_key
     """
-    Main entry point.
-    
-    Args:
-        single_file: Path to a single Java file to process (for debug mode).
-                    If None, runs in GitHub Action mode.
-    """
-    
-    # Determine mode
+    # Determine mode and get files
     if single_file:
-        # Single file debug mode
-        java_files = [single_file]
-        commit_after = False
-        
-        # Check if file exists
         if not os.path.exists(single_file):
             print(f"Error: File {single_file} does not exist", file=sys.stderr)
             sys.exit(1)
-            
+        java_files = [single_file]
+        commit_after = False
     else:
-        # GitHub Action mode
         java_files = get_changed_java_files()
         commit_after = True
-        
-        if not java_files:
-            print("No Java files found in PR changes.")
-            return
-   
-    # Get API key from environment
+
+    # Get API key
     api_key = os.environ.get('ANTHROPIC_API_KEY')
     if not api_key:
         print("Error: ANTHROPIC_API_KEY environment variable is required", file=sys.stderr)
         sys.exit(1)
-    
-    # Initialize Claude client
-    client = Anthropic(api_key=api_key)
-    # Load prompt template once
-    prompt_template = load_prompt_template()
-    
-    # Initialize usage tracking
-    total_usage_stats = {
+
+    return {
+        'java_files': java_files,
+        'commit_after': commit_after,
+        'api_key': api_key
+    }
+
+def initialize_usage_stats(client):
+    """Initialize usage tracking statistics.
+
+    Returns:
+        dict: Usage statistics dictionary
+    """
+    stats = {
         'total_input_tokens': 0,
         'total_output_tokens': 0,
         'total_tokens': 0,
@@ -202,80 +202,188 @@ def main(single_file=None):
         'items_processed': 0,
         'credits_info': None
     }
-    
-    # Try to get initial credits info
+
     initial_credits = get_credits_info(client)
     if initial_credits:
-        total_usage_stats['credits_info'] = initial_credits
-    
+        stats['credits_info'] = initial_credits
+
+    return stats
+
+def read_java_file(file_path):
+    """Read a Java file and return its content.
+
+    Args:
+        file_path: Path to the Java file
+
+    Returns:
+        str: File content
+
+    Raises:
+        Exception: If file cannot be read
+    """
+    with open(file_path, 'r', encoding='utf-8') as f:
+        return f.read()
+
+def write_updated_file(file_path, java_content, items_with_javadoc):
+    """Write updated content back to file.
+
+    Args:
+        file_path: Path to the Java file
+        java_content: Original Java content
+        items_with_javadoc: List of items with generated Javadoc
+    """
+    updated_content = add_javadoc_to_file(java_content, items_with_javadoc)
+
+    with open(file_path, 'w', encoding='utf-8') as f:
+        f.write(updated_content)
+
+    print(f"✅ Updated {file_path} with {len(items_with_javadoc)} Javadoc comments")
+
+def print_items_summary(items_needing_docs):
+    """Print summary of items found needing documentation.
+
+    Args:
+        items_needing_docs: List of items needing documentation
+    """
+    print(f"Found {len(items_needing_docs)} items needing documentation:")
+    for item in items_needing_docs:
+        existing = "✔" if item.get('existing_javadoc') else "✗"
+        print(f"  - {item['type']}: {item['name']} (existing: {existing})")
+
+def generate_javadoc_for_item(item, java_content, client, prompt_template):
+    """Generate Javadoc for a single item.
+
+    Args:
+        item: Item dictionary
+        java_content: Full Java file content
+        client: Anthropic client
+        prompt_template: Prompt template string
+
+    Returns:
+        tuple: (doc_content, usage_info) or (None, None) on failure
+    """
+    print(f"\nGenerating Javadoc for {item['type']}: {item['name']}...")
+    return generate_javadoc(client, item, java_content, prompt_template)
+
+def update_usage_stats(total_usage_stats, usage_info):
+    """Update total usage statistics with new usage info.
+
+    Args:
+        total_usage_stats: Dictionary of total usage stats
+        usage_info: Dictionary of current usage info
+    """
+    total_usage_stats['total_input_tokens'] += usage_info['input_tokens']
+    total_usage_stats['total_output_tokens'] += usage_info['output_tokens']
+    total_usage_stats['total_tokens'] += usage_info['total_tokens']
+    total_usage_stats['total_cost'] += usage_info['estimated_cost']
+    total_usage_stats['items_processed'] += 1
+
+def print_generation_result(item_name, doc_content, usage_info):
+    """Print the result of Javadoc generation.
+
+    Args:
+        item_name: Name of the item
+        doc_content: Generated documentation content
+        usage_info: Usage information dictionary
+    """
+    has_impl_notes = doc_content.get('implementation_notes') if isinstance(doc_content, dict) else False
+    impl_status = " (with implementation notes)" if has_impl_notes else ""
+    print(f"✅ Generated{impl_status} ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
+
+def generate_all_javadocs(items_needing_docs, java_content, client, prompt_template, total_usage_stats):
+    """Generate Javadoc for all items and update usage stats.
+
+    Args:
+        items_needing_docs: List of items needing documentation
+        java_content: Full Java file content
+        client: Anthropic client
+        prompt_template: Prompt template string
+        total_usage_stats: Dictionary of total usage stats
+
+    Returns:
+        list: Items with generated Javadoc
+    """
+    items_with_javadoc = []
+
+    for item in items_needing_docs:
+        doc_content, usage_info = generate_javadoc_for_item(item, java_content, client, prompt_template)
+
+        if doc_content and usage_info:
+            item['javadoc'] = doc_content
+            items_with_javadoc.append(item)
+            update_usage_stats(total_usage_stats, usage_info)
+            print_generation_result(item['name'], doc_content, usage_info)
+        else:
+            print(f"❌ Failed to generate Javadoc for {item['name']}")
+
+    return items_with_javadoc
+
+def process_single_java_file(java_file, client, prompt_template, total_usage_stats):
+    """Process a single Java file and return whether it was modified.
+
+    Args:
+        java_file: Path to Java file
+        client: Anthropic client
+        prompt_template: Prompt template string
+        total_usage_stats: Dictionary of total usage stats
+
+    Returns:
+        bool: True if file was modified, False otherwise
+    """
+    print(f"\n{'='*60}")
+    print(f"Processing: {java_file}")
+    print('='*60)
+
+    try:
+        java_content = read_java_file(java_file)
+        items_needing_docs = parse_java_file(java_content)
+
+        if not items_needing_docs:
+            print(f"No items needing documentation found in {java_file}")
+            return False
+
+        print_items_summary(items_needing_docs)
+        items_with_javadoc = generate_all_javadocs(items_needing_docs, java_content, client, prompt_template, total_usage_stats)
+
+        if items_with_javadoc:
+            write_updated_file(java_file, java_content, items_with_javadoc)
+            return True
+
+        return False
+
+    except Exception as e:
+        print(f"Error processing {java_file}: {e}\n{traceback.format_exc()}", file=sys.stderr)
+        return False
+
+def process_all_files(java_files, client, prompt_template, total_usage_stats):
+    """Process all Java files and return list of modified files.
+
+    Args:
+        java_files: List of Java file paths
+        client: Anthropic client
+        prompt_template: Prompt template string
+        total_usage_stats: Dictionary of total usage stats
+
+    Returns:
+        list: List of modified file paths
+    """
     files_modified = []
-    
-    # Process each Java file
+
     for java_file in java_files:
-        print(f"\n{'='*60}")
-        print(f"Processing: {java_file}")
-        print('='*60)
-        
-        try:
-            # Read the Java file
-            with open(java_file, 'r', encoding='utf-8') as f:
-                java_content = f.read()
-            
-            # Parse the file to find items needing documentation
-            items_needing_docs = parse_java_file(java_content)
-            
-            if not items_needing_docs:
-                print(f"No items needing documentation found in {java_file}")
-                continue
-            
-            print(f"Found {len(items_needing_docs)} items needing documentation:")
-            for item in items_needing_docs:
-                existing = "✔" if item.get('existing_javadoc') else "✗"
-                print(f"  - {item['type']}: {item['name']} (existing: {existing})")
-            
-            # Generate Javadoc for each item
-            items_with_javadoc = []
-            for item in items_needing_docs:
-                print(f"\nGenerating Javadoc for {item['type']}: {item['name']}...")
-                
-                # generate_javadoc now returns a dict with javadoc and implementation_notes
-                doc_content, usage_info = generate_javadoc(client, item, java_content, prompt_template)
-                
-                if doc_content and usage_info:
-                    # Store the entire dict (with both javadoc and implementation_notes)
-                    item['javadoc'] = doc_content
-                    items_with_javadoc.append(item)
-                    
-                    # Update usage stats
-                    total_usage_stats['total_input_tokens'] += usage_info['input_tokens']
-                    total_usage_stats['total_output_tokens'] += usage_info['output_tokens']
-                    total_usage_stats['total_tokens'] += usage_info['total_tokens']
-                    total_usage_stats['total_cost'] += usage_info['estimated_cost']
-                    total_usage_stats['items_processed'] += 1
-                    
-                    # Show if implementation notes were generated
-                    has_impl_notes = doc_content.get('implementation_notes') if isinstance(doc_content, dict) else False
-                    impl_status = " (with implementation notes)" if has_impl_notes else ""
-                    print(f"✅ Generated{impl_status} ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
-                else:
-                    print(f"❌ Failed to generate Javadoc for {item['name']}")
-            
-            # Add Javadoc to the file content
-            if items_with_javadoc:
-                updated_content = add_javadoc_to_file(java_content, items_with_javadoc)
-                
-                # Write the updated content back to the file
-                with open(java_file, 'w', encoding='utf-8') as f:
-                    f.write(updated_content)
-                
-                files_modified.append(java_file)
-                print(f"✅ Updated {java_file} with {len(items_with_javadoc)} Javadoc comments")
-            
-        except Exception as e:
-            print(f"Error processing {java_file}: {e}\n{traceback.format_exc()}", file=sys.stderr)
-            continue
-    
-    # Print summary
+        if process_single_java_file(java_file, client, prompt_template, total_usage_stats):
+            files_modified.append(java_file)
+
+    return files_modified
+
+def print_final_summary(java_files, files_modified, total_usage_stats, commit_after):
+    """Print final summary of processing.
+
+    Args:
+        java_files: List of all Java files processed
+        files_modified: List of modified files
+        total_usage_stats: Dictionary of total usage stats
+        commit_after: Whether files will be committed
+    """
     print(f"\n{'='*60}")
     print("SUMMARY")
     print('='*60)
@@ -284,14 +392,36 @@ def main(single_file=None):
     print(f"Items documented: {total_usage_stats['items_processed']}")
     print(f"Total tokens used: {total_usage_stats['total_tokens']}")
     print(f"Estimated cost: ${total_usage_stats['total_cost']:.4f}")
-    
-    # Commit changes if any files were modified
-    if files_modified and commit_after:
-        commit_changes(files_modified, total_usage_stats)
-    elif not commit_after and files_modified:
-        print(f"\n✅ Successfully modified {len(files_modified)} file(s) in debug mode (no commit)")
-    elif not files_modified:
+
+    if not files_modified:
         print("No files were modified.")
+        return
+
+    if commit_after:
+        commit_changes(files_modified, total_usage_stats)
+    else:
+        print(f"\n✅ Successfully modified {len(files_modified)} file(s) in debug mode (no commit)")
+
+def main(single_file=None):
+    """Main entry point.
+
+    Args:
+        single_file: Path to a single Java file to process (for debug mode).
+                    If None, runs in GitHub Action mode.
+    """
+    config = setup_environment(single_file)
+
+    if not config['java_files']:
+        print("No Java files found in PR changes.")
+        return
+
+    client = Anthropic(api_key=config['api_key'])
+    prompt_template = load_prompt_template()
+    total_usage_stats = initialize_usage_stats(client)
+
+    files_modified = process_all_files(config['java_files'], client, prompt_template, total_usage_stats)
+
+    print_final_summary(config['java_files'], files_modified, total_usage_stats, config['commit_after'])
 
 if __name__ == "__main__":
     single_file = sys.argv[1] if len(sys.argv) > 1 else None

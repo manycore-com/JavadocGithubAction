@@ -8,16 +8,12 @@ Modified to support AI Implementation Notes inside method bodies.
 import os
 import sys
 import re
-tree_sitter = None
-Language = None
-Parser = None
+from tree_sitter import Language, Parser
 
-try:
-    import tree_sitter
-    from tree_sitter import Language, Parser
-except ImportError:
-    print("Error: tree-sitter not installed. Run: pip install tree-sitter tree-sitter-java", file=sys.stderr)
-    sys.exit(1)
+# Configuration constants for Javadoc generation thresholds
+MIN_METHOD_LINES = 10  # Minimum lines required to document a method
+MIN_FILE_LINES = 30    # Minimum lines required to document a file
+METHOD_INDENT = '    ' # Standard method body indentation
 
 def parse_existing_javadoc(javadoc_content):
     """Parse existing Javadoc to extract @param, @return, and other tags."""
@@ -89,37 +85,40 @@ def should_update_javadoc(existing_parsed, item):
     # If no existing content, definitely update
     if not existing_parsed or not existing_parsed.get('description'):
         return True
-    
+
     # Always update if it's clearly generic or placeholder content
     description = existing_parsed.get('description', '').lower()
     generic_phrases = [
         'todo', 'fixme', 'placeholder', 'default constructor',
         'getter for', 'setter for', 'returns the', 'sets the'
     ]
-    
+
     if any(phrase in description for phrase in generic_phrases):
         return True
-    
+
     # For classes, check if there are incorrectly used @param tags
+    # Regular classes should not have @param tags - if they do, update the Javadoc
+    # But records should have @param tags for their components
     if item.get('type') == 'class':
-        # Regular classes should not have @param tags - if they do, update the Javadoc
-        # But records should have @param tags for their components
         is_record = 'record' in item.get('signature', '').lower()
         if not is_record and existing_parsed.get('params'):
             return True
-    
+
     # For methods, check if we have parameter or return info that's missing
     if item.get('type') == 'method':
         # If method has parameters but no @param tags, consider updating
-        if item.get('parameters') and not existing_parsed.get('params'):
+        has_params_without_docs = item.get('parameters') and not existing_parsed.get('params')
+        if has_params_without_docs:
             return True
-        
-        # If method returns something but no @return tag, consider updating  
-        if (item.get('return_type') and 
-            str(item.get('return_type')) != 'void' and 
-            not existing_parsed.get('return')):
+
+        # If method returns something but no @return tag, consider updating
+        return_type = item.get('return_type')
+        has_return_without_docs = (return_type and
+                                   str(return_type) != 'void' and
+                                   not existing_parsed.get('return'))
+        if has_return_without_docs:
             return True
-    
+
     # Otherwise, preserve existing content
     return False
 
@@ -162,36 +161,51 @@ def find_javadoc_for_element(lines, line_num):
     
     return None
 
+def extract_method_lines(lines, start_line):
+    """Extract lines of a method/constructor by counting braces.
+
+    Args:
+        lines: List of file lines
+        start_line: 1-indexed starting line number
+
+    Returns:
+        list: Lines that make up the method/constructor body
+    """
+    start_idx = start_line - 1
+
+    if start_idx >= len(lines):
+        return []
+
+    brace_count = 0
+    method_lines = []
+    found_opening_brace = False
+
+    for i in range(start_idx, len(lines)):
+        line = lines[i]
+        method_lines.append(line)
+
+        # Count braces to find method end
+        brace_count += line.count('{') - line.count('}')
+        if '{' in line and not found_opening_brace:
+            found_opening_brace = True
+
+        # Stop when we've closed the method
+        if found_opening_brace and brace_count <= 0:
+            break
+
+    return method_lines
+
 def extract_implementation_code(lines, item):
     """Extract the implementation code for a method or class."""
     start_line = item.get('line', 1)
-    start_idx = start_line - 1
-    
-    if start_idx >= len(lines):
-        return ""
-    
+
     # For methods/constructors, extract until the closing brace
     if item.get('type') in ['method', 'constructor']:
-        brace_count = 0
-        code_lines = []
-        found_opening_brace = False
-        
-        for i in range(start_idx, len(lines)):
-            line = lines[i]
-            code_lines.append(line)
-            
-            # Count braces to find method end
-            brace_count += line.count('{') - line.count('}')
-            if '{' in line and not found_opening_brace:
-                found_opening_brace = True
-            
-            # Stop when we've closed the method
-            if found_opening_brace and brace_count <= 0:
-                break
-        
-        return '\n'.join(code_lines)
-    
+        method_lines = extract_method_lines(lines, start_line)
+        return '\n'.join(method_lines)
+
     # For classes, just return a reasonable portion
+    start_idx = start_line - 1
     return '\n'.join(lines[start_idx:start_idx + 10])
 
 def analyze_potential_exceptions(implementation_code, item_type):
@@ -227,23 +241,22 @@ def analyze_potential_exceptions(implementation_code, item_type):
 
 def is_getter_or_setter(method_name, method_body):
     """Check if a method is a simple getter or setter."""
+    # Helper to count meaningful lines (excluding braces and comments)
+    def count_meaningful_lines(body):
+        return len([line.strip() for line in body.split('\n')
+                   if line.strip() and line.strip() not in ['{', '}']
+                   and not line.strip().startswith('//')])
+
     # Simple getter pattern: starts with "get" or "is", has return statement
-    if (method_name.startswith('get') or method_name.startswith('is')) and 'return ' in method_body:
-        # Count non-empty lines (excluding braces and simple returns)
-        meaningful_lines = [line.strip() for line in method_body.split('\n') 
-                          if line.strip() and not line.strip() in ['{', '}'] 
-                          and not line.strip().startswith('//')]
-        # Simple getter usually has just one return statement
-        return len(meaningful_lines) <= 2
-    
+    is_getter = (method_name.startswith('get') or method_name.startswith('is')) and 'return ' in method_body
+    if is_getter:
+        return count_meaningful_lines(method_body) <= 2
+
     # Simple setter pattern: starts with "set", has assignment
-    if method_name.startswith('set') and ('=' in method_body or 'this.' in method_body):
-        meaningful_lines = [line.strip() for line in method_body.split('\n') 
-                          if line.strip() and not line.strip() in ['{', '}'] 
-                          and not line.strip().startswith('//')]
-        # Simple setter usually has just one assignment
-        return len(meaningful_lines) <= 2
-    
+    is_setter = method_name.startswith('set') and ('=' in method_body or 'this.' in method_body)
+    if is_setter:
+        return count_meaningful_lines(method_body) <= 2
+
     return False
 
 def count_method_lines(lines, start_line, method_type='method'):
@@ -277,9 +290,9 @@ def should_skip_method(method_name, lines, start_line):
     """Determine if a method should be skipped from Javadoc generation."""
     # Count lines in the method
     line_count = count_method_lines(lines, start_line)
-    
-    # Skip if method is shorter than 10 lines
-    if line_count < 10:
+
+    # Skip if method is shorter than minimum threshold
+    if line_count < MIN_METHOD_LINES:
         return True
     
     # Extract method body for getter/setter detection
@@ -309,10 +322,10 @@ def should_skip_method(method_name, lines, start_line):
 
 def should_skip_class(lines):
     """Determine if a class should be skipped from Javadoc generation based on file size."""
-    # Skip if the entire Java file is shorter than 30 lines
-    if len(lines) < 30:
+    # Skip if the entire Java file is shorter than minimum threshold
+    if len(lines) < MIN_FILE_LINES:
         return True
-    
+
     return False
 
 def get_java_parser():
@@ -387,12 +400,287 @@ def walk_tree(node, node_type, results, source_code):
     """Recursively walk the tree to find nodes of a specific type."""
     if node.type == node_type:
         results.append(node)
-    
+
     for child in node.children:
         walk_tree(child, node_type, results, source_code)
 
+def get_identifier_from_node(node, source_code):
+    """Extract identifier (name) from a node.
+
+    Args:
+        node: Tree-sitter node
+        source_code: Source code string
+
+    Returns:
+        str: Identifier name or None
+    """
+    for child in node.children:
+        if child.type == 'identifier':
+            return get_node_text(child, source_code)
+    return None
+
+def build_class_signature(modifiers, node_type, class_name):
+    """Build a class signature string.
+
+    Args:
+        modifiers: List of modifier strings
+        node_type: Node type (e.g., 'class_declaration')
+        class_name: Name of the class
+
+    Returns:
+        str: Class signature
+    """
+    modifiers_str = ' '.join(modifiers) if modifiers else ''
+    class_type = 'class' if node_type == 'class_declaration' else node_type.replace('_declaration', '')
+    return f"{modifiers_str} {class_type} {class_name}".strip()
+
+def build_method_signature(modifiers, return_type, method_name, params):
+    """Build a method signature string.
+
+    Args:
+        modifiers: List of modifier strings
+        return_type: Return type string
+        method_name: Name of the method
+        params: List of parameter dicts with 'type' and 'name'
+
+    Returns:
+        str: Method signature
+    """
+    modifiers_str = ' '.join(modifiers) if modifiers else ''
+    param_strings = [f"{p['type']} {p['name']}" for p in params]
+    return f"{modifiers_str} {return_type} {method_name}({', '.join(param_strings)})".strip()
+
+def build_constructor_signature(modifiers, constructor_name, params):
+    """Build a constructor signature string.
+
+    Args:
+        modifiers: List of modifier strings
+        constructor_name: Name of the constructor
+        params: List of parameter dicts with 'type' and 'name'
+
+    Returns:
+        str: Constructor signature
+    """
+    modifiers_str = ' '.join(modifiers) if modifiers else ''
+    param_strings = [f"{p['type']} {p['name']}" for p in params]
+    return f"{modifiers_str} {constructor_name}({', '.join(param_strings)})".strip()
+
+def should_include_class(modifiers, existing_javadoc, item, lines):
+    """Determine if a class should be included for documentation.
+
+    Args:
+        modifiers: List of modifier strings
+        existing_javadoc: Existing Javadoc dict or None
+        item: Item dictionary
+        lines: List of file lines
+
+    Returns:
+        bool: True if class should be documented
+    """
+    is_public = any('public' in str(mod) or 'lic' in str(mod) for mod in modifiers)
+    if not is_public:
+        return False
+
+    if should_skip_class(lines):
+        return False
+
+    if not existing_javadoc:
+        return True
+
+    return should_update_javadoc(existing_javadoc.get('parsed', {}), item)
+
+def should_include_method(modifiers, method_name, existing_javadoc, item, lines, line_num):
+    """Determine if a method should be included for documentation.
+
+    Args:
+        modifiers: List of modifier strings
+        method_name: Name of the method
+        existing_javadoc: Existing Javadoc dict or None
+        item: Item dictionary
+        lines: List of file lines
+        line_num: Line number of the method
+
+    Returns:
+        bool: True if method should be documented
+    """
+    if 'public' not in modifiers:
+        return False
+
+    if should_skip_method(method_name, lines, line_num):
+        return False
+
+    if not existing_javadoc:
+        return True
+
+    return should_update_javadoc(existing_javadoc.get('parsed', {}), item)
+
+def should_include_constructor(modifiers, existing_javadoc, item):
+    """Determine if a constructor should be included for documentation.
+
+    Args:
+        modifiers: List of modifier strings
+        existing_javadoc: Existing Javadoc dict or None
+        item: Item dictionary
+
+    Returns:
+        bool: True if constructor should be documented
+    """
+    if 'public' not in modifiers:
+        return False
+
+    if not existing_javadoc:
+        return True
+
+    return should_update_javadoc(existing_javadoc.get('parsed', {}), item)
+
+def create_class_item(node, java_content, lines):
+    """Create an item dictionary for a class node.
+
+    Args:
+        node: Tree-sitter node
+        java_content: Full Java file content
+        lines: List of file lines
+
+    Returns:
+        dict: Item dictionary or None if invalid
+    """
+    line_num = get_node_line(node)
+    modifiers = extract_modifiers(node, java_content)
+    class_name = get_identifier_from_node(node, java_content)
+
+    if not class_name:
+        return None
+
+    signature = build_class_signature(modifiers, node.type, class_name)
+    existing_javadoc = find_javadoc_for_element(lines, line_num)
+    implementation_code = extract_implementation_code(lines, {'type': 'class', 'line': line_num})
+
+    item = {
+        'type': 'class',
+        'name': class_name,
+        'line': line_num,
+        'signature': signature,
+        'modifiers': modifiers,
+        'documentation': None,
+        'existing_javadoc': existing_javadoc,
+        'implementation_code': implementation_code,
+        'potential_exceptions': analyze_potential_exceptions(implementation_code, 'class')
+    }
+
+    if should_include_class(modifiers, existing_javadoc, item, lines):
+        return item
+    return None
+
+def create_method_item(node, java_content, lines):
+    """Create an item dictionary for a method node.
+
+    Args:
+        node: Tree-sitter node
+        java_content: Full Java file content
+        lines: List of file lines
+
+    Returns:
+        dict: Item dictionary or None if invalid
+    """
+    line_num = get_node_line(node)
+    modifiers = extract_modifiers(node, java_content)
+    method_name = get_identifier_from_node(node, java_content)
+
+    if not method_name:
+        return None
+
+    params = extract_parameters(node, java_content)
+    return_type = extract_return_type(node, java_content)
+    signature = build_method_signature(modifiers, return_type, method_name, params)
+    existing_javadoc = find_javadoc_for_element(lines, line_num)
+    implementation_code = extract_implementation_code(lines, {'type': 'method', 'line': line_num})
+
+    item = {
+        'type': 'method',
+        'name': method_name,
+        'line': line_num,
+        'signature': signature,
+        'modifiers': modifiers,
+        'return_type': return_type,
+        'parameters': params,
+        'documentation': None,
+        'existing_javadoc': existing_javadoc,
+        'implementation_code': implementation_code,
+        'potential_exceptions': analyze_potential_exceptions(implementation_code, 'method')
+    }
+
+    if should_include_method(modifiers, method_name, existing_javadoc, item, lines, line_num):
+        return item
+    return None
+
+def create_constructor_item(node, java_content, lines):
+    """Create an item dictionary for a constructor node.
+
+    Args:
+        node: Tree-sitter node
+        java_content: Full Java file content
+        lines: List of file lines
+
+    Returns:
+        dict: Item dictionary or None if invalid
+    """
+    line_num = get_node_line(node)
+    modifiers = extract_modifiers(node, java_content)
+    constructor_name = get_identifier_from_node(node, java_content)
+
+    if not constructor_name:
+        return None
+
+    params = extract_parameters(node, java_content)
+    signature = build_constructor_signature(modifiers, constructor_name, params)
+    existing_javadoc = find_javadoc_for_element(lines, line_num)
+    implementation_code = extract_implementation_code(lines, {'type': 'constructor', 'line': line_num})
+
+    item = {
+        'type': 'constructor',
+        'name': constructor_name,
+        'line': line_num,
+        'signature': signature,
+        'modifiers': modifiers,
+        'parameters': params,
+        'documentation': None,
+        'existing_javadoc': existing_javadoc,
+        'implementation_code': implementation_code,
+        'potential_exceptions': analyze_potential_exceptions(implementation_code, 'constructor')
+    }
+
+    if should_include_constructor(modifiers, existing_javadoc, item):
+        return item
+    return None
+
+def extract_items_from_nodes(nodes, java_content, lines, item_creator):
+    """Extract items from tree-sitter nodes using a creator function.
+
+    Args:
+        nodes: List of tree-sitter nodes
+        java_content: Full Java file content
+        lines: List of file lines
+        item_creator: Function that creates an item from a node
+
+    Returns:
+        list: List of item dictionaries
+    """
+    items = []
+    for node in nodes:
+        item = item_creator(node, java_content, lines)
+        if item:
+            items.append(item)
+    return items
+
 def parse_java_file(java_content):
-    """Parse Java file using tree-sitter to extract classes and methods that need Javadoc."""
+    """Parse Java file using tree-sitter to extract classes and methods that need Javadoc.
+
+    Args:
+        java_content: Full Java file content
+
+    Returns:
+        list: List of items needing documentation
+    """
     try:
         parser = get_java_parser()
         tree = parser.parse(bytes(java_content, 'utf-8'))
@@ -400,224 +688,85 @@ def parse_java_file(java_content):
         print(f"Error parsing Java file: {e}", file=sys.stderr)
         return []
 
-    items_needing_docs = []
     lines = java_content.split('\n')
-    source_bytes = java_content.encode('utf-8')
 
-    # Find all class declarations
+    # Find all class-like declarations
     class_nodes = []
-    walk_tree(tree.root_node, 'class_declaration', class_nodes, java_content)
-    walk_tree(tree.root_node, 'interface_declaration', class_nodes, java_content)
-    walk_tree(tree.root_node, 'record_declaration', class_nodes, java_content)
-    walk_tree(tree.root_node, 'enum_declaration', class_nodes, java_content)
-    
-    for node in class_nodes:
-        line_num = get_node_line(node)
-        modifiers = extract_modifiers(node, java_content)
-        
-        # Get class name
-        class_name = None
-        for child in node.children:
-            if child.type == 'identifier':
-                class_name = get_node_text(child, java_content)
-                break
-        
-        if not class_name:
-            continue
-        
-        # Build class signature
-        modifiers_str = ' '.join(modifiers) if modifiers else ''
-        class_type = 'class' if node.type == 'class_declaration' else node.type.replace('_declaration', '')
-        class_signature = f"{modifiers_str} {class_type} {class_name}".strip()
+    for node_type in ['class_declaration', 'interface_declaration', 'record_declaration', 'enum_declaration']:
+        walk_tree(tree.root_node, node_type, class_nodes, java_content)
 
-        # Find existing Javadoc
-        existing_javadoc = find_javadoc_for_element(lines, line_num)
-
-        implementation_code = extract_implementation_code(lines, {'type': 'class', 'line': line_num})
-
-        item = {
-            'type': 'class',
-            'name': class_name,
-            'line': line_num,
-            'signature': class_signature,
-            'modifiers': modifiers,
-            'documentation': None,
-            'existing_javadoc': existing_javadoc,
-            'implementation_code': implementation_code,
-            'potential_exceptions': analyze_potential_exceptions(implementation_code, 'class')
-        }
-
-        # Only add if public, file is large enough, and needs documentation update
-        # Check for public modifier (handle parsing issues with partial matches)
-        is_public = any('public' in str(mod) or 'lic' in str(mod) for mod in modifiers)
-        if (is_public and 
-            not should_skip_class(lines) and 
-            (not existing_javadoc or should_update_javadoc(existing_javadoc.get('parsed', {}), item))):
-            items_needing_docs.append(item)
-
-    # Find all method declarations
+    # Find method declarations
     method_nodes = []
     walk_tree(tree.root_node, 'method_declaration', method_nodes, java_content)
-    
-    for node in method_nodes:
-        line_num = get_node_line(node)
-        modifiers = extract_modifiers(node, java_content)
-        
-        # Get method name
-        method_name = None
-        for child in node.children:
-            if child.type == 'identifier':
-                method_name = get_node_text(child, java_content)
-                break
-        
-        if not method_name:
-            continue
-        
-        # Extract parameters and return type
-        params = extract_parameters(node, java_content)
-        return_type = extract_return_type(node, java_content)
-        
-        # Build method signature
-        modifiers_str = ' '.join(modifiers) if modifiers else ''
-        param_strings = [f"{p['type']} {p['name']}" for p in params]
-        method_signature = f"{modifiers_str} {return_type} {method_name}({', '.join(param_strings)})".strip()
 
-        # Find existing Javadoc
-        existing_javadoc = find_javadoc_for_element(lines, line_num)
-
-        implementation_code = extract_implementation_code(lines, {'type': 'method', 'line': line_num})
-
-        item = {
-            'type': 'method',
-            'name': method_name,
-            'line': line_num,
-            'signature': method_signature,
-            'modifiers': modifiers,
-            'return_type': return_type,
-            'parameters': params,
-            'documentation': None,
-            'existing_javadoc': existing_javadoc,
-            'implementation_code': implementation_code,
-            'potential_exceptions': analyze_potential_exceptions(implementation_code, 'method')
-        }
-
-        # Only add if public, not a getter/setter/short method, and needs documentation update
-        if ('public' in modifiers and 
-            not should_skip_method(method_name, lines, line_num) and 
-            (not existing_javadoc or should_update_javadoc(existing_javadoc.get('parsed', {}), item))):
-            items_needing_docs.append(item)
-
-    # Find all constructor declarations
+    # Find constructor declarations
     constructor_nodes = []
     walk_tree(tree.root_node, 'constructor_declaration', constructor_nodes, java_content)
-    
-    for node in constructor_nodes:
-        line_num = get_node_line(node)
-        modifiers = extract_modifiers(node, java_content)
-        
-        # Get constructor name
-        constructor_name = None
-        for child in node.children:
-            if child.type == 'identifier':
-                constructor_name = get_node_text(child, java_content)
-                break
-        
-        if not constructor_name:
-            continue
-        
-        # Extract parameters
-        params = extract_parameters(node, java_content)
-        
-        # Build constructor signature
-        modifiers_str = ' '.join(modifiers) if modifiers else ''
-        param_strings = [f"{p['type']} {p['name']}" for p in params]
-        constructor_signature = f"{modifiers_str} {constructor_name}({', '.join(param_strings)})".strip()
 
-        # Find existing Javadoc
-        existing_javadoc = find_javadoc_for_element(lines, line_num)
-
-        implementation_code = extract_implementation_code(lines, {'type': 'constructor', 'line': line_num})
-
-        item = {
-            'type': 'constructor',
-            'name': constructor_name,
-            'line': line_num,
-            'signature': constructor_signature,
-            'modifiers': modifiers,
-            'parameters': params,
-            'documentation': None,
-            'existing_javadoc': existing_javadoc,
-            'implementation_code': implementation_code,
-            'potential_exceptions': analyze_potential_exceptions(implementation_code, 'constructor')
-        }
-
-        # Only add if public and needs documentation update
-        if 'public' in modifiers and (not existing_javadoc or should_update_javadoc(existing_javadoc.get('parsed', {}), item)):
-            items_needing_docs.append(item)
+    # Extract items from nodes
+    items_needing_docs = []
+    items_needing_docs.extend(extract_items_from_nodes(class_nodes, java_content, lines, create_class_item))
+    items_needing_docs.extend(extract_items_from_nodes(method_nodes, java_content, lines, create_method_item))
+    items_needing_docs.extend(extract_items_from_nodes(constructor_nodes, java_content, lines, create_constructor_item))
 
     return items_needing_docs
 
-def load_prompt_template():
-    """Load and merge prompt templates from BASE-PROMPT.md and CUSTOMER-PROMPT.md.
-    
-    CUSTOMER-PROMPT.md takes precedence over BASE-PROMPT.md.
-    Falls back to legacy CLAUDE-PROMPT.md if the new files don't exist.
+def extract_prompt_from_markdown(content):
+    """Extract prompt content from markdown code blocks.
+
+    Args:
+        content: Markdown content
+
+    Returns:
+        str: Extracted prompt or empty string
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    base_file = os.path.join(script_dir, 'BASE-PROMPT.md')
-    customer_file = os.path.join(script_dir, 'CUSTOMER-PROMPT.md')
-    legacy_file = os.path.join(script_dir, 'CLAUDE-PROMPT.md')
-    
-    def extract_prompt_from_markdown(content):
-        """Extract prompt content from markdown code blocks."""
-        import re
-        matches = re.findall(r'```\n(.*?)\n```', content, re.DOTALL)
-        return '\n\n'.join(matches) if matches else ""
-    
-    base_prompt = ""
-    customer_prompt = ""
-    
-    # Try to load base prompt
-    if os.path.exists(base_file):
-        try:
-            with open(base_file, 'r', encoding='utf-8') as f:
-                base_content = f.read()
-            base_prompt = extract_prompt_from_markdown(base_content)
-        except Exception as e:
-            print(f"Warning: Could not read base prompt: {e}", file=sys.stderr)
-    
-    # Try to load customer prompt
-    if os.path.exists(customer_file):
-        try:
-            with open(customer_file, 'r', encoding='utf-8') as f:
-                customer_content = f.read()
-            customer_prompt = extract_prompt_from_markdown(customer_content)
-        except Exception as e:
-            print(f"Warning: Could not read customer prompt: {e}", file=sys.stderr)
-    
-    # If we have both base and customer prompts, merge them
-    if base_prompt and customer_prompt:
-        merged_prompt = base_prompt + "\n\n" + customer_prompt
-        return merged_prompt
-    
-    # If we only have one of them, use it
-    if base_prompt:
-        return base_prompt
-    if customer_prompt:
+    matches = re.findall(r'```\n(.*?)\n```', content, re.DOTALL)
+    return '\n\n'.join(matches) if matches else ""
+
+def load_prompt_file(filepath):
+    """Load a single prompt file and extract content from markdown.
+
+    Args:
+        filepath: Path to prompt file
+
+    Returns:
+        str: Extracted prompt or None on failure
+    """
+    if not os.path.exists(filepath):
+        return None
+
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return extract_prompt_from_markdown(content)
+    except Exception as e:
+        print(f"Warning: Could not read {filepath}: {e}", file=sys.stderr)
+        return None
+
+def merge_prompts(base_prompt, customer_prompt):
+    """Merge base and customer prompts.
+
+    Args:
+        base_prompt: Base prompt string (may be None or empty)
+        customer_prompt: Customer prompt string (may be None or empty)
+
+    Returns:
+        str: Merged prompt, or None if both are empty
+    """
+    if not base_prompt and not customer_prompt:
+        return None
+    if not base_prompt:
         return customer_prompt
-    
-    # Fall back to legacy CLAUDE-PROMPT.md if it exists
-    if os.path.exists(legacy_file):
-        try:
-            with open(legacy_file, 'r', encoding='utf-8') as f:
-                legacy_content = f.read()
-            legacy_prompt = extract_prompt_from_markdown(legacy_content)
-            if legacy_prompt:
-                return legacy_prompt
-        except Exception as e:
-            print(f"Warning: Could not read legacy prompt: {e}", file=sys.stderr)
-    
-    # Final fallback to hardcoded default
+    if not customer_prompt:
+        return base_prompt
+    return base_prompt + "\n\n" + customer_prompt
+
+def get_default_prompt():
+    """Get the default hardcoded prompt template.
+
+    Returns:
+        str: Default prompt template
+    """
     return """You are a Javadoc generator. Generate ONLY a Javadoc comment block for this Java {item_type}:
 
 Name: {item_name}
@@ -642,6 +791,30 @@ CORE RULES:
 
 GENERATE ONLY THE JAVADOC COMMENT BLOCK NOW:
 """
+
+def load_prompt_template():
+    """Load and merge prompt templates from BASE-PROMPT.md and CUSTOMER-PROMPT.md.
+
+    CUSTOMER-PROMPT.md takes precedence over BASE-PROMPT.md.
+    Falls back to legacy CLAUDE-PROMPT.md if the new files don't exist.
+
+    Returns:
+        str: Prompt template
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    base_prompt = load_prompt_file(os.path.join(script_dir, 'BASE-PROMPT.md'))
+    customer_prompt = load_prompt_file(os.path.join(script_dir, 'CUSTOMER-PROMPT.md'))
+
+    merged_prompt = merge_prompts(base_prompt, customer_prompt)
+    if merged_prompt:
+        return merged_prompt
+
+    legacy_prompt = load_prompt_file(os.path.join(script_dir, 'CLAUDE-PROMPT.md'))
+    if legacy_prompt:
+        return legacy_prompt
+
+    return get_default_prompt()
 
 def extract_javadoc_from_response(response_text):
     """Extract both the Javadoc comment block and AI implementation notes from Claude's response.
@@ -683,110 +856,191 @@ def extract_javadoc_from_response(response_text):
     
     return result
 
+def detect_indentation(line):
+    """Detect the indentation of a line.
+
+    Args:
+        line: Line to analyze
+
+    Returns:
+        str: Indentation string (spaces/tabs)
+    """
+    indentation = ""
+    for char in line:
+        if char in [' ', '\t']:
+            indentation += char
+        else:
+            break
+    return indentation
+
+def apply_indentation(lines, indentation):
+    """Apply indentation to a list of lines.
+
+    Args:
+        lines: List of lines to indent
+        indentation: Indentation string to apply
+
+    Returns:
+        list: Indented lines
+    """
+    indented_lines = []
+    for line in lines:
+        if line.strip():
+            indented_lines.append(indentation + line.strip())
+        else:
+            indented_lines.append('')
+    return indented_lines
+
+def extract_javadoc_data(javadoc):
+    """Extract Javadoc and implementation notes from item data.
+
+    Args:
+        javadoc: Either a dict with 'javadoc' and 'implementation_notes' keys,
+                or a string (backward compatibility)
+
+    Returns:
+        tuple: (javadoc_string, implementation_notes_string)
+    """
+    if isinstance(javadoc, dict):
+        return javadoc.get('javadoc', ''), javadoc.get('implementation_notes', '')
+    return javadoc, None
+
+def calculate_javadoc_insert_line(lines, item):
+    """Calculate the line number where Javadoc should be inserted.
+
+    Args:
+        lines: List of file lines
+        item: Item dictionary with line number and existing_javadoc info
+
+    Returns:
+        int: 0-indexed line number for insertion
+    """
+    insert_line = item['line'] - 1  # Convert to 0-indexed
+
+    existing_javadoc = item.get('existing_javadoc')
+    if existing_javadoc:
+        start_line = existing_javadoc['start_line'] - 1
+        end_line = existing_javadoc['end_line'] - 1
+        del lines[start_line:end_line + 1]
+        insert_line = start_line
+
+    return insert_line
+
+def find_opening_brace(lines, start_line, max_search=10):
+    """Find the opening brace of a method/constructor.
+
+    Args:
+        lines: List of file lines
+        start_line: 0-indexed line number to start searching from
+        max_search: Maximum number of lines to search
+
+    Returns:
+        int: 0-indexed line number of opening brace, or None if not found
+    """
+    for i in range(start_line, min(len(lines), start_line + max_search)):
+        if '{' in lines[i]:
+            return i
+    return None
+
+def insert_javadoc(lines, item, javadoc):
+    """Insert Javadoc comment before the target line.
+
+    Args:
+        lines: List of file lines (modified in place)
+        item: Item dictionary with line number and existing javadoc info
+        javadoc: Javadoc string to insert
+
+    Returns:
+        int: Number of lines inserted
+    """
+    if not javadoc:
+        return 0
+
+    insert_line = calculate_javadoc_insert_line(lines, item)
+    target_line = lines[insert_line] if insert_line < len(lines) else ""
+    indentation = detect_indentation(target_line)
+
+    javadoc_lines = javadoc.split('\n')
+    for i, javadoc_line in enumerate(javadoc_lines):
+        indented_line = indentation + javadoc_line if javadoc_line.strip() else javadoc_line
+        lines.insert(insert_line + i, indented_line)
+
+    return len(javadoc_lines)
+
+def insert_implementation_notes(lines, item, implementation_notes, base_indentation):
+    """Insert implementation notes inside method body.
+
+    Args:
+        lines: List of file lines (modified in place)
+        item: Item dictionary with line number
+        implementation_notes: Implementation notes string to insert
+        base_indentation: Base indentation of the method/class
+    """
+    method_start_line = item['line'] - 1
+    brace_line = find_opening_brace(lines, method_start_line)
+
+    if brace_line is None:
+        return
+
+    method_indentation = base_indentation + METHOD_INDENT
+    impl_lines = implementation_notes.split('\n')
+
+    insert_pos = brace_line + 1
+
+    # Add blank line before if needed
+    if insert_pos < len(lines) and lines[insert_pos].strip():
+        lines.insert(insert_pos, '')
+        insert_pos += 1
+
+    # Insert implementation notes
+    for impl_line in impl_lines:
+        if impl_line.strip():
+            indented_impl = method_indentation + impl_line.strip()
+        else:
+            indented_impl = ''
+        lines.insert(insert_pos, indented_impl)
+        insert_pos += 1
+
+    # Add blank line after if needed
+    if insert_pos < len(lines) and lines[insert_pos].strip():
+        lines.insert(insert_pos, '')
+
 def add_javadoc_to_file(java_content, items_with_javadoc):
     """Add generated Javadoc comments and implementation notes to the Java file content.
-    
+
     Javadoc goes before the method/class declaration.
     Implementation notes go inside the method body, right after the opening brace.
+
+    Args:
+        java_content: Original Java file content
+        items_with_javadoc: List of items with generated Javadoc
+
+    Returns:
+        str: Updated Java file content
     """
     lines = java_content.split('\n')
-    
-    # Sort items by line number in reverse order to avoid line number shifts
     sorted_items = sorted(items_with_javadoc, key=lambda x: x['line'], reverse=True)
-    
+
     for item in sorted_items:
         if 'javadoc' not in item:
             continue
-        
-        # Extract Javadoc and implementation notes
-        javadoc_data = item['javadoc']
-        if isinstance(javadoc_data, dict):
-            javadoc = javadoc_data.get('javadoc', '')
-            implementation_notes = javadoc_data.get('implementation_notes', '')
-        else:
-            # Backward compatibility: if javadoc is a string, use it as-is
-            javadoc = javadoc_data
-            implementation_notes = None
-        
-        line_num = item['line']
-        
-        # First, handle the Javadoc insertion (same as before)
-        insert_line = line_num - 1  # Convert to 0-indexed
-        
-        # Check if there's existing Javadoc to replace
-        existing_javadoc = item.get('existing_javadoc')
-        if existing_javadoc:
-            # Remove the existing Javadoc
-            start_line = existing_javadoc['start_line'] - 1  # Convert to 0-indexed
-            end_line = existing_javadoc['end_line'] - 1    # Convert to 0-indexed
-            
-            # Remove the old Javadoc lines
-            del lines[start_line:end_line + 1]
-            
-            # Adjust insertion point
-            insert_line = start_line
-        
-        # Detect the indentation of the target method/class line
+
+        javadoc_str, implementation_notes = extract_javadoc_data(item['javadoc'])
+
+        # Get base indentation before inserting javadoc
+        insert_line = item['line'] - 1
         target_line = lines[insert_line] if insert_line < len(lines) else ""
-        indentation = ""
-        for char in target_line:
-            if char in [' ', '\t']:
-                indentation += char
-            else:
-                break
-        
-        # Split the Javadoc into lines and apply indentation
-        if javadoc:
-            javadoc_lines = javadoc.split('\n')
-            
-            # Insert Javadoc at the correct position with proper indentation
-            for i, javadoc_line in enumerate(javadoc_lines):
-                # Apply indentation to each line of the Javadoc
-                indented_line = indentation + javadoc_line if javadoc_line.strip() else javadoc_line
-                lines.insert(insert_line + i, indented_line)
-            
-            # Update line numbers for implementation notes insertion
-            # Account for the lines we just added
-            line_num += len(javadoc_lines)
-        
-        # Now handle implementation notes insertion (for methods and constructors only)
+        base_indentation = detect_indentation(target_line)
+
+        # Insert Javadoc and track how many lines were added
+        lines_added = insert_javadoc(lines, item, javadoc_str)
+
+        # Update line number for implementation notes
+        if lines_added > 0:
+            item['line'] += lines_added
+
+        # Insert implementation notes for methods and constructors
         if implementation_notes and item['type'] in ['method', 'constructor']:
-            # Find the opening brace of the method/constructor
-            method_start_line = line_num - 1  # 0-indexed
-            
-            # Look for the opening brace
-            brace_line = None
-            for i in range(method_start_line, min(len(lines), method_start_line + 10)):
-                if '{' in lines[i]:
-                    brace_line = i
-                    break
-            
-            if brace_line is not None:
-                # Detect indentation inside the method (one level deeper)
-                method_indentation = indentation + '    '  # Add 4 spaces for inner indentation
-                
-                # Split implementation notes into lines and apply indentation
-                impl_lines = implementation_notes.split('\n')
-                
-                # Insert implementation notes after the opening brace
-                insert_pos = brace_line + 1
-                
-                # Add a blank line before implementation notes if not already present
-                if insert_pos < len(lines) and lines[insert_pos].strip():
-                    lines.insert(insert_pos, '')
-                    insert_pos += 1
-                
-                # Insert each line of implementation notes
-                for impl_line in impl_lines:
-                    if impl_line.strip():
-                        indented_impl = method_indentation + impl_line.strip()
-                    else:
-                        indented_impl = ''
-                    lines.insert(insert_pos, indented_impl)
-                    insert_pos += 1
-                
-                # Add a blank line after implementation notes if not already present
-                if insert_pos < len(lines) and lines[insert_pos].strip():
-                    lines.insert(insert_pos, '')
-    
+            insert_implementation_notes(lines, item, implementation_notes, base_indentation)
+
     return '\n'.join(lines)
