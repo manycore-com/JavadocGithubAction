@@ -34,46 +34,24 @@ FULL FILE CONTEXT:
 {java_content}
 
 INSTRUCTIONS:
-Generate TWO separate documentation blocks:
-
-1. A Javadoc comment (/** ... */) that describes WHAT the code does
-   - Focus on the contract/API from a user's perspective
-   - Include @param, @return, @throws tags as appropriate
-   - NO implementation details - just the public contract
-
-2. An implementation notes comment (/* AI Implementation Notes: ... */) for methods/constructors
-   - Explain HOW the code works internally
-   - Include algorithm details, data structures, complexity analysis
-   - Describe state changes, edge cases, important logic flow
-   - This serves as a "state dump" for AI systems
+Generate a Javadoc comment (/** ... */) that describes the code:
+- Focus on the contract/API from a user's perspective
+- Include @param, @return, @throws tags as appropriate
+- Describe what the code does and its behavior
+- Base your description on what the code ACTUALLY does
 
 OUTPUT FORMAT:
-For classes, generate ONLY the Javadoc:
 /**
- * [Description of what this class represents]
- * [Additional details about the class purpose and usage]
- */
-
-For methods and constructors, generate BOTH blocks:
-/**
- * [Description of what this method/constructor does]
- * [Additional details about behavior/contract]
- * 
- * @param paramName parameter description for users
- * @return what is returned to the caller
+ * [Description of what this class/method/constructor does]
+ * [Additional details about behavior and usage]
+ *
+ * @param paramName parameter description (for methods/constructors)
+ * @return what is returned (for non-void methods)
  * @throws ExceptionType when this exception is thrown
- */
-/* AI Implementation Notes:
- * [Detailed explanation of HOW it works internally]
- * [Algorithm steps, data structures used, complexity analysis]
- * [State changes, edge cases handled, important logic flow]
  */
 
 IMPORTANT:
-- Output ONLY these documentation blocks, nothing else
+- Output ONLY the Javadoc comment block, nothing else
 - Do NOT include method signatures or code
-- Keep Javadoc focused on WHAT (the contract)
-- Keep implementation notes focused on HOW (the internals)
-- For classes, only generate Javadoc (no implementation notes)
-- For methods/constructors, generate both blocks as shown above
+- No explanatory text before or after the Javadoc
 ```

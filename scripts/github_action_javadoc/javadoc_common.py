@@ -2,7 +2,6 @@
 """
 Common functionality for Javadoc generation scripts.
 Contains shared functions used by both standalone.py and action.py.
-Modified to support AI Implementation Notes inside method bodies.
 """
 
 import os
@@ -817,16 +816,14 @@ def load_prompt_template():
     return get_default_prompt()
 
 def extract_javadoc_from_response(response_text):
-    """Extract both the Javadoc comment block and AI implementation notes from Claude's response.
-    
-    Returns a dict with 'javadoc' and 'implementation_notes' keys.
+    """Extract the Javadoc comment block from Claude's response.
+
+    Returns the Javadoc string.
     """
     lines = response_text.split('\n')
     javadoc_lines = []
-    implementation_lines = []
     in_javadoc = False
-    in_implementation = False
-    
+
     for i, line in enumerate(lines):
         # Start capturing Javadoc
         if line.strip().startswith('/**'):
@@ -837,24 +834,9 @@ def extract_javadoc_from_response(response_text):
             javadoc_lines.append(line)
             if line.strip().endswith('*/'):
                 in_javadoc = False
-        # Look for implementation notes after Javadoc
-        elif not in_javadoc and (line.strip().startswith('/* AI Implementation Notes:') or 
-                                  line.strip().startswith('/*AI Implementation Notes:')):
-            in_implementation = True
-            implementation_lines.append(line)
-        # Continue capturing implementation notes
-        elif in_implementation:
-            implementation_lines.append(line)
-            if line.strip().endswith('*/'):
-                in_implementation = False
-    
-    # Build the result dictionary
-    result = {
-        'javadoc': '\n'.join(javadoc_lines) if javadoc_lines else response_text.strip(),
-        'implementation_notes': '\n'.join(implementation_lines) if implementation_lines else None
-    }
-    
-    return result
+                break
+
+    return '\n'.join(javadoc_lines) if javadoc_lines else response_text.strip()
 
 def detect_indentation(line):
     """Detect the indentation of a line.
@@ -892,18 +874,15 @@ def apply_indentation(lines, indentation):
     return indented_lines
 
 def extract_javadoc_data(javadoc):
-    """Extract Javadoc and implementation notes from item data.
+    """Extract Javadoc from item data.
 
     Args:
-        javadoc: Either a dict with 'javadoc' and 'implementation_notes' keys,
-                or a string (backward compatibility)
+        javadoc: Javadoc string
 
     Returns:
-        tuple: (javadoc_string, implementation_notes_string)
+        str: Javadoc string
     """
-    if isinstance(javadoc, dict):
-        return javadoc.get('javadoc', ''), javadoc.get('implementation_notes', '')
-    return javadoc, None
+    return javadoc
 
 def calculate_javadoc_insert_line(lines, item):
     """Calculate the line number where Javadoc should be inserted.
@@ -967,49 +946,10 @@ def insert_javadoc(lines, item, javadoc):
 
     return len(javadoc_lines)
 
-def insert_implementation_notes(lines, item, implementation_notes, base_indentation):
-    """Insert implementation notes inside method body.
-
-    Args:
-        lines: List of file lines (modified in place)
-        item: Item dictionary with line number
-        implementation_notes: Implementation notes string to insert
-        base_indentation: Base indentation of the method/class
-    """
-    method_start_line = item['line'] - 1
-    brace_line = find_opening_brace(lines, method_start_line)
-
-    if brace_line is None:
-        return
-
-    method_indentation = base_indentation + METHOD_INDENT
-    impl_lines = implementation_notes.split('\n')
-
-    insert_pos = brace_line + 1
-
-    # Add blank line before if needed
-    if insert_pos < len(lines) and lines[insert_pos].strip():
-        lines.insert(insert_pos, '')
-        insert_pos += 1
-
-    # Insert implementation notes
-    for impl_line in impl_lines:
-        if impl_line.strip():
-            indented_impl = method_indentation + impl_line.strip()
-        else:
-            indented_impl = ''
-        lines.insert(insert_pos, indented_impl)
-        insert_pos += 1
-
-    # Add blank line after if needed
-    if insert_pos < len(lines) and lines[insert_pos].strip():
-        lines.insert(insert_pos, '')
-
 def add_javadoc_to_file(java_content, items_with_javadoc):
-    """Add generated Javadoc comments and implementation notes to the Java file content.
+    """Add generated Javadoc comments to the Java file content.
 
     Javadoc goes before the method/class declaration.
-    Implementation notes go inside the method body, right after the opening brace.
 
     Args:
         java_content: Original Java file content
@@ -1025,22 +965,9 @@ def add_javadoc_to_file(java_content, items_with_javadoc):
         if 'javadoc' not in item:
             continue
 
-        javadoc_str, implementation_notes = extract_javadoc_data(item['javadoc'])
+        javadoc_str = extract_javadoc_data(item['javadoc'])
 
-        # Get base indentation before inserting javadoc
-        insert_line = item['line'] - 1
-        target_line = lines[insert_line] if insert_line < len(lines) else ""
-        base_indentation = detect_indentation(target_line)
-
-        # Insert Javadoc and track how many lines were added
-        lines_added = insert_javadoc(lines, item, javadoc_str)
-
-        # Update line number for implementation notes
-        if lines_added > 0:
-            item['line'] += lines_added
-
-        # Insert implementation notes for methods and constructors
-        if implementation_notes and item['type'] in ['method', 'constructor']:
-            insert_implementation_notes(lines, item, implementation_notes, base_indentation)
+        # Insert Javadoc
+        insert_javadoc(lines, item, javadoc_str)
 
     return '\n'.join(lines)

@@ -15,10 +15,13 @@ from javadoc_common import (
 )
 
 # API Configuration
-CLAUDE_MODEL = "claude-opus-4-1-20250805"
+CLAUDE_MODEL_OPUS = "claude-opus-4-1-20250805"
+CLAUDE_MODEL_HAIKU = "claude-3-5-haiku-20241022"
 MAX_TOKENS = 5000
-INPUT_TOKEN_COST = 0.000015   # Cost per input token in USD
-OUTPUT_TOKEN_COST = 0.000075  # Cost per output token in USD
+OPUS_INPUT_TOKEN_COST = 0.000015   # Cost per input token in USD for Opus
+OPUS_OUTPUT_TOKEN_COST = 0.000075  # Cost per output token in USD for Opus
+HAIKU_INPUT_TOKEN_COST = 0.000001  # Cost per input token in USD for Haiku
+HAIKU_OUTPUT_TOKEN_COST = 0.000005 # Cost per output token in USD for Haiku
 
 def get_changed_java_files():
     """Get list of Java files changed in the current PR."""
@@ -92,7 +95,7 @@ def commit_changes(files_modified, total_usage_stats=None):
         print(f"Error committing changes: {e}", file=sys.stderr)
 
 def generate_javadoc(client, item, java_content, prompt_template=None):
-    """Generate Javadoc comment and implementation notes using Claude API."""
+    """Generate Javadoc comment using Claude API."""
     if prompt_template is None:
         prompt_template = load_prompt_template()
 
@@ -126,13 +129,12 @@ def generate_javadoc(client, item, java_content, prompt_template=None):
 
     try:
         response = client.messages.create(
-            model=CLAUDE_MODEL,
+            model=CLAUDE_MODEL_OPUS,
             max_tokens=MAX_TOKENS,
             messages=[{"role": "user", "content": prompt}]
         )
 
-        # Extract both Javadoc and implementation notes from the response
-        # The function now returns a dict with 'javadoc' and 'implementation_notes'
+        # Extract Javadoc from the response
         extracted_content = extract_javadoc_from_response(response.content[0].text)
 
         # Calculate usage stats
@@ -140,7 +142,7 @@ def generate_javadoc(client, item, java_content, prompt_template=None):
             'input_tokens': response.usage.input_tokens,
             'output_tokens': response.usage.output_tokens,
             'total_tokens': response.usage.input_tokens + response.usage.output_tokens,
-            'estimated_cost': (response.usage.input_tokens * INPUT_TOKEN_COST) + (response.usage.output_tokens * OUTPUT_TOKEN_COST)
+            'estimated_cost': (response.usage.input_tokens * OPUS_INPUT_TOKEN_COST) + (response.usage.output_tokens * OPUS_OUTPUT_TOKEN_COST)
         }
         
         return extracted_content, usage_info
@@ -148,6 +150,61 @@ def generate_javadoc(client, item, java_content, prompt_template=None):
     except Exception as e:
         print(f"Error generating Javadoc for {item['name']}: {e}", file=sys.stderr)
         return None, None
+
+def assess_javadoc_quality(client, item, existing_javadoc):
+    """Assess the quality of existing Javadoc using Haiku.
+
+    Returns True if the Javadoc needs improvement, False otherwise.
+    """
+    assessment_prompt = f"""You are assessing the quality of a Javadoc comment for a Java {item['type']}.
+
+ITEM DETAILS:
+Name: {item['name']}
+Signature: {item.get('signature', '')}
+
+EXISTING JAVADOC:
+{existing_javadoc}
+
+IMPLEMENTATION CODE:
+{item.get('implementation_code', '')}
+
+Assess whether this Javadoc needs improvement. Consider:
+1. Is it accurate and complete?
+2. Does it properly document all parameters with @param tags?
+3. Does it properly document the return value with @return tag (for non-void methods)?
+4. Does it document exceptions with @throws tags?
+5. Is it clear and helpful?
+6. Does it match what the code actually does?
+
+Respond with ONLY one word:
+- "GOOD" if the Javadoc is adequate and doesn't need improvement
+- "IMPROVE" if the Javadoc needs to be regenerated
+"""
+
+    try:
+        response = client.messages.create(
+            model=CLAUDE_MODEL_HAIKU,
+            max_tokens=10,
+            messages=[{"role": "user", "content": assessment_prompt}]
+        )
+
+        assessment = response.content[0].text.strip().upper()
+
+        # Calculate usage stats for tracking
+        usage_info = {
+            'input_tokens': response.usage.input_tokens,
+            'output_tokens': response.usage.output_tokens,
+            'total_tokens': response.usage.input_tokens + response.usage.output_tokens,
+            'estimated_cost': (response.usage.input_tokens * HAIKU_INPUT_TOKEN_COST) + (response.usage.output_tokens * HAIKU_OUTPUT_TOKEN_COST)
+        }
+
+        needs_improvement = "IMPROVE" in assessment
+        return needs_improvement, usage_info
+
+    except Exception as e:
+        print(f"Error assessing Javadoc quality for {item['name']}: {e}", file=sys.stderr)
+        # On error, default to not needing improvement to avoid unnecessary regeneration
+        return False, None
 
 def get_credits_info(client):
     """Get current credits information from Anthropic API."""
@@ -250,6 +307,83 @@ def print_items_summary(items_needing_docs):
         existing = "✔" if item.get('existing_javadoc') else "✗"
         print(f"  - {item['type']}: {item['name']} (existing: {existing})")
 
+def process_item_with_pipeline(item, java_content, client, prompt_template, total_usage_stats):
+    """Process a single item through the quality assessment pipeline.
+
+    For items without existing Javadoc: generate 1 version with Opus
+    For items with existing Javadoc: assess with Haiku, then generate 2 versions if needed
+
+    Args:
+        item: Item dictionary
+        java_content: Full Java file content
+        client: Anthropic client
+        prompt_template: Prompt template string
+        total_usage_stats: Dictionary of total usage stats to update
+
+    Returns:
+        dict: Result dictionary with 'javadoc', 'alternatives', and 'used_existing' keys
+    """
+    existing_javadoc = item.get('existing_javadoc')
+
+    # Case 1: No existing Javadoc - generate 1 version
+    if not existing_javadoc:
+        print(f"\nGenerating Javadoc for {item['type']}: {item['name']} (no existing javadoc)...")
+        doc_content, usage_info = generate_javadoc(client, item, java_content, prompt_template)
+        if doc_content and usage_info:
+            update_usage_stats(total_usage_stats, usage_info)
+            print(f"✅ Generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
+            return {
+                'javadoc': doc_content,
+                'alternatives': None,
+                'used_existing': False
+            }
+        return None
+
+    # Case 2: Has existing Javadoc - assess quality with Haiku
+    print(f"\nAssessing existing Javadoc for {item['type']}: {item['name']}...")
+    needs_improvement, assessment_usage = assess_javadoc_quality(
+        client, item, existing_javadoc['content']
+    )
+
+    if assessment_usage:
+        update_usage_stats(total_usage_stats, assessment_usage)
+        print(f"  Assessment: {'needs improvement' if needs_improvement else 'looks good'} "
+              f"({assessment_usage['total_tokens']} tokens, ${assessment_usage['estimated_cost']:.4f})")
+
+    # Case 2a: Existing Javadoc is good - keep it
+    if not needs_improvement:
+        print(f"✅ Keeping existing Javadoc")
+        return {
+            'javadoc': existing_javadoc['content'],
+            'alternatives': None,
+            'used_existing': True
+        }
+
+    # Case 2b: Needs improvement - generate 2 versions with Opus
+    print(f"  Generating 2 alternative versions with Opus...")
+
+    versions = []
+    for i in range(2):
+        print(f"    Generating version {i+1}...")
+        doc_content, usage_info = generate_javadoc(client, item, java_content, prompt_template)
+        if doc_content and usage_info:
+            versions.append(doc_content)
+            update_usage_stats(total_usage_stats, usage_info)
+            print(f"    ✅ Version {i+1} generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
+        else:
+            print(f"    ❌ Failed to generate version {i+1}")
+
+    if len(versions) == 0:
+        print(f"❌ Failed to generate any versions")
+        return None
+
+    # Use first version as primary, store second as alternative
+    return {
+        'javadoc': versions[0],
+        'alternatives': versions[1] if len(versions) > 1 else None,
+        'used_existing': False
+    }
+
 def generate_javadoc_for_item(item, java_content, client, prompt_template):
     """Generate Javadoc for a single item.
 
@@ -286,12 +420,10 @@ def print_generation_result(item_name, doc_content, usage_info):
         doc_content: Generated documentation content
         usage_info: Usage information dictionary
     """
-    has_impl_notes = doc_content.get('implementation_notes') if isinstance(doc_content, dict) else False
-    impl_status = " (with implementation notes)" if has_impl_notes else ""
-    print(f"✅ Generated{impl_status} ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
+    print(f"✅ Generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
 
 def generate_all_javadocs(items_needing_docs, java_content, client, prompt_template, total_usage_stats):
-    """Generate Javadoc for all items and update usage stats.
+    """Generate Javadoc for all items using the quality assessment pipeline.
 
     Args:
         items_needing_docs: List of items needing documentation
@@ -301,25 +433,34 @@ def generate_all_javadocs(items_needing_docs, java_content, client, prompt_templ
         total_usage_stats: Dictionary of total usage stats
 
     Returns:
-        list: Items with generated Javadoc
+        tuple: (items_with_javadoc, alternatives_map)
+            - items_with_javadoc: List of items with generated Javadoc
+            - alternatives_map: Dict mapping item names to alternative Javadoc versions
     """
     items_with_javadoc = []
+    alternatives_map = {}
 
     for item in items_needing_docs:
-        doc_content, usage_info = generate_javadoc_for_item(item, java_content, client, prompt_template)
+        result = process_item_with_pipeline(item, java_content, client, prompt_template, total_usage_stats)
 
-        if doc_content and usage_info:
-            item['javadoc'] = doc_content
+        if result:
+            item['javadoc'] = result['javadoc']
             items_with_javadoc.append(item)
-            update_usage_stats(total_usage_stats, usage_info)
-            print_generation_result(item['name'], doc_content, usage_info)
+
+            # Store alternatives if any
+            if result.get('alternatives'):
+                alternatives_map[item['name']] = {
+                    'item': item,
+                    'primary': result['javadoc'],
+                    'alternative': result['alternatives']
+                }
         else:
             print(f"❌ Failed to generate Javadoc for {item['name']}")
 
-    return items_with_javadoc
+    return items_with_javadoc, alternatives_map
 
 def process_single_java_file(java_file, client, prompt_template, total_usage_stats):
-    """Process a single Java file and return whether it was modified.
+    """Process a single Java file and return whether it was modified and any alternatives.
 
     Args:
         java_file: Path to Java file
@@ -328,7 +469,9 @@ def process_single_java_file(java_file, client, prompt_template, total_usage_sta
         total_usage_stats: Dictionary of total usage stats
 
     Returns:
-        bool: True if file was modified, False otherwise
+        tuple: (was_modified, alternatives_map)
+            - was_modified: True if file was modified
+            - alternatives_map: Dict of alternative Javadoc versions for this file
     """
     print(f"\n{'='*60}")
     print(f"Processing: {java_file}")
@@ -340,23 +483,23 @@ def process_single_java_file(java_file, client, prompt_template, total_usage_sta
 
         if not items_needing_docs:
             print(f"No items needing documentation found in {java_file}")
-            return False
+            return False, {}
 
         print_items_summary(items_needing_docs)
-        items_with_javadoc = generate_all_javadocs(items_needing_docs, java_content, client, prompt_template, total_usage_stats)
+        items_with_javadoc, alternatives_map = generate_all_javadocs(items_needing_docs, java_content, client, prompt_template, total_usage_stats)
 
         if items_with_javadoc:
             write_updated_file(java_file, java_content, items_with_javadoc)
-            return True
+            return True, alternatives_map
 
-        return False
+        return False, {}
 
     except Exception as e:
         print(f"Error processing {java_file}: {e}\n{traceback.format_exc()}", file=sys.stderr)
-        return False
+        return False, {}
 
 def process_all_files(java_files, client, prompt_template, total_usage_stats):
-    """Process all Java files and return list of modified files.
+    """Process all Java files and return list of modified files and alternatives.
 
     Args:
         java_files: List of Java file paths
@@ -365,15 +508,21 @@ def process_all_files(java_files, client, prompt_template, total_usage_stats):
         total_usage_stats: Dictionary of total usage stats
 
     Returns:
-        list: List of modified file paths
+        tuple: (files_modified, all_alternatives)
+            - files_modified: List of modified file paths
+            - all_alternatives: Dict mapping file paths to their alternatives
     """
     files_modified = []
+    all_alternatives = {}
 
     for java_file in java_files:
-        if process_single_java_file(java_file, client, prompt_template, total_usage_stats):
+        was_modified, alternatives_map = process_single_java_file(java_file, client, prompt_template, total_usage_stats)
+        if was_modified:
             files_modified.append(java_file)
+            if alternatives_map:
+                all_alternatives[java_file] = alternatives_map
 
-    return files_modified
+    return files_modified, all_alternatives
 
 def print_final_summary(java_files, files_modified, total_usage_stats, commit_after):
     """Print final summary of processing.
@@ -402,6 +551,85 @@ def print_final_summary(java_files, files_modified, total_usage_stats, commit_af
     else:
         print(f"\n✅ Successfully modified {len(files_modified)} file(s) in debug mode (no commit)")
 
+def create_alternatives_comment(all_alternatives):
+    """Create a markdown comment with alternative Javadoc versions for the PR.
+
+    Args:
+        all_alternatives: Dict mapping file paths to their alternatives
+
+    Returns:
+        str: Markdown formatted comment with alternatives
+    """
+    if not all_alternatives:
+        return None
+
+    comment_parts = [
+        "## Alternative Javadoc Versions Available",
+        "",
+        "The AI generated multiple Javadoc versions for some methods. Review and choose which version to keep:",
+        ""
+    ]
+
+    for file_path, alternatives_map in all_alternatives.items():
+        comment_parts.append(f"### File: `{file_path}`")
+        comment_parts.append("")
+
+        for item_name, alternatives in alternatives_map.items():
+            item = alternatives['item']
+            comment_parts.append(f"#### {item['type'].capitalize()}: `{item_name}` (line {item['line']})")
+            comment_parts.append("")
+            comment_parts.append("**Version 1 (Currently Applied):**")
+            comment_parts.append("```java")
+            comment_parts.append(alternatives['primary'])
+            comment_parts.append("```")
+            comment_parts.append("")
+            comment_parts.append("**Version 2 (Alternative):**")
+            comment_parts.append("```java")
+            comment_parts.append(alternatives['alternative'])
+            comment_parts.append("```")
+            comment_parts.append("")
+
+    return '\n'.join(comment_parts)
+
+def post_alternatives_to_pr(all_alternatives):
+    """Post alternative Javadoc versions as a PR comment using gh CLI.
+
+    Args:
+        all_alternatives: Dict mapping file paths to their alternatives
+    """
+    if not all_alternatives:
+        return
+
+    comment = create_alternatives_comment(all_alternatives)
+    if not comment:
+        return
+
+    try:
+        # Write comment to a temp file
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as f:
+            f.write(comment)
+            temp_file = f.name
+
+        # Post comment to PR using gh CLI
+        result = subprocess.run(
+            ['gh', 'pr', 'comment', '--body-file', temp_file],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        print(f"\n✅ Posted {len(all_alternatives)} alternative Javadoc version(s) to PR")
+
+        # Clean up temp file
+        os.unlink(temp_file)
+
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: Could not post alternatives to PR: {e}", file=sys.stderr)
+        print(f"  You can manually review the alternatives in the output above", file=sys.stderr)
+    except Exception as e:
+        print(f"Warning: Could not post alternatives to PR: {e}", file=sys.stderr)
+
 def main(single_file=None):
     """Main entry point.
 
@@ -419,9 +647,13 @@ def main(single_file=None):
     prompt_template = load_prompt_template()
     total_usage_stats = initialize_usage_stats(client)
 
-    files_modified = process_all_files(config['java_files'], client, prompt_template, total_usage_stats)
+    files_modified, all_alternatives = process_all_files(config['java_files'], client, prompt_template, total_usage_stats)
 
     print_final_summary(config['java_files'], files_modified, total_usage_stats, config['commit_after'])
+
+    # Post alternatives to PR if in GitHub Action mode and there are alternatives
+    if config['commit_after'] and all_alternatives:
+        post_alternatives_to_pr(all_alternatives)
 
 if __name__ == "__main__":
     single_file = sys.argv[1] if len(sys.argv) > 1 else None

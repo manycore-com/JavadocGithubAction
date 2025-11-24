@@ -24,10 +24,13 @@ from javadoc_common import (
 )
 
 from action import (
-    CLAUDE_MODEL,
+    CLAUDE_MODEL_OPUS,
+    CLAUDE_MODEL_HAIKU,
     MAX_TOKENS,
-    INPUT_TOKEN_COST,
-    OUTPUT_TOKEN_COST
+    OPUS_INPUT_TOKEN_COST,
+    OPUS_OUTPUT_TOKEN_COST,
+    HAIKU_INPUT_TOKEN_COST,
+    HAIKU_OUTPUT_TOKEN_COST
 )
 
 
@@ -42,20 +45,26 @@ class TestConfigurationConstants(unittest.TestCase):
 
     def test_action_constants(self):
         """Test action.py constants."""
-        self.assertEqual(CLAUDE_MODEL, "claude-opus-4-1-20250805")
+        self.assertEqual(CLAUDE_MODEL_OPUS, "claude-opus-4-1-20250805")
+        self.assertEqual(CLAUDE_MODEL_HAIKU, "claude-3-5-haiku-20241022")
         self.assertEqual(MAX_TOKENS, 5000)
-        self.assertEqual(INPUT_TOKEN_COST, 0.000015)
-        self.assertEqual(OUTPUT_TOKEN_COST, 0.000075)
+        self.assertEqual(OPUS_INPUT_TOKEN_COST, 0.000015)
+        self.assertEqual(OPUS_OUTPUT_TOKEN_COST, 0.000075)
+        self.assertEqual(HAIKU_INPUT_TOKEN_COST, 0.000001)
+        self.assertEqual(HAIKU_OUTPUT_TOKEN_COST, 0.000005)
 
     def test_constants_are_not_none(self):
         """Ensure all constants are defined and not None."""
         self.assertIsNotNone(MIN_METHOD_LINES)
         self.assertIsNotNone(MIN_FILE_LINES)
         self.assertIsNotNone(METHOD_INDENT)
-        self.assertIsNotNone(CLAUDE_MODEL)
+        self.assertIsNotNone(CLAUDE_MODEL_OPUS)
+        self.assertIsNotNone(CLAUDE_MODEL_HAIKU)
         self.assertIsNotNone(MAX_TOKENS)
-        self.assertIsNotNone(INPUT_TOKEN_COST)
-        self.assertIsNotNone(OUTPUT_TOKEN_COST)
+        self.assertIsNotNone(OPUS_INPUT_TOKEN_COST)
+        self.assertIsNotNone(OPUS_OUTPUT_TOKEN_COST)
+        self.assertIsNotNone(HAIKU_INPUT_TOKEN_COST)
+        self.assertIsNotNone(HAIKU_OUTPUT_TOKEN_COST)
 
 
 class TestMethodSkipping(unittest.TestCase):
@@ -144,17 +153,14 @@ class TestJavadocParsing(unittest.TestCase):
  * @return The result
  */
 
-/* AI Implementation Notes:
- * This method uses advanced algorithms.
- */"""
+Some additional text after."""
 
         result = extract_javadoc_from_response(response)
 
-        self.assertIsInstance(result, dict)
-        self.assertIn('javadoc', result)
-        self.assertIn('implementation_notes', result)
-        self.assertIn('/**', result['javadoc'])
-        self.assertIn('@param x', result['javadoc'])
+        self.assertIsInstance(result, str)
+        self.assertIn('/**', result)
+        self.assertIn('@param x', result)
+        self.assertIn('*/', result)
 
 
 class TestIndentation(unittest.TestCase):
@@ -210,19 +216,35 @@ class TestMethodLineCounting(unittest.TestCase):
 class TestCostCalculation(unittest.TestCase):
     """Test that cost calculations use the correct constants."""
 
-    def test_cost_calculation_formula(self):
-        """Test that cost calculation uses INPUT_TOKEN_COST and OUTPUT_TOKEN_COST."""
+    def test_opus_cost_calculation_formula(self):
+        """Test that cost calculation uses OPUS_INPUT_TOKEN_COST and OPUS_OUTPUT_TOKEN_COST."""
         input_tokens = 1000
         output_tokens = 500
 
-        expected_cost = (input_tokens * INPUT_TOKEN_COST) + (output_tokens * OUTPUT_TOKEN_COST)
+        expected_cost = (input_tokens * OPUS_INPUT_TOKEN_COST) + (output_tokens * OPUS_OUTPUT_TOKEN_COST)
 
         # Verify the calculation
         self.assertAlmostEqual(expected_cost, 0.0525, places=4)
 
         # Verify constants are reasonable
-        self.assertGreater(OUTPUT_TOKEN_COST, INPUT_TOKEN_COST,
+        self.assertGreater(OPUS_OUTPUT_TOKEN_COST, OPUS_INPUT_TOKEN_COST,
                           "Output tokens should cost more than input tokens")
+
+    def test_haiku_cost_calculation_formula(self):
+        """Test that cost calculation uses HAIKU_INPUT_TOKEN_COST and HAIKU_OUTPUT_TOKEN_COST."""
+        input_tokens = 1000
+        output_tokens = 500
+
+        expected_cost = (input_tokens * HAIKU_INPUT_TOKEN_COST) + (output_tokens * HAIKU_OUTPUT_TOKEN_COST)
+
+        # Verify the calculation
+        self.assertAlmostEqual(expected_cost, 0.0035, places=4)
+
+        # Verify constants are reasonable
+        self.assertGreater(HAIKU_OUTPUT_TOKEN_COST, HAIKU_INPUT_TOKEN_COST,
+                          "Output tokens should cost more than input tokens")
+        self.assertLess(HAIKU_INPUT_TOKEN_COST, OPUS_INPUT_TOKEN_COST,
+                       "Haiku should be cheaper than Opus")
 
 
 if __name__ == '__main__':
