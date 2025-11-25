@@ -13,6 +13,7 @@ from javadoc_common import (
     extract_javadoc_from_response,
     add_javadoc_to_file
 )
+from heuristic_checks import run_heuristic_checks, should_skip_ai_assessment
 
 # API Configuration
 CLAUDE_MODEL_OPUS = "claude-opus-4-1-20250805"
@@ -151,22 +152,34 @@ def generate_javadoc(client, item, java_content, prompt_template=None):
         print(f"Error generating Javadoc for {item['name']}: {e}", file=sys.stderr)
         return None, None
 
-def assess_javadoc_quality(client, item, existing_javadoc):
-    """Assess the quality of existing Javadoc using Haiku.
+def load_assessment_prompt():
+    """Load the assessment prompt template from ASSESSMENT-PROMPT.md.
 
-    Returns True if the Javadoc needs improvement, False otherwise.
+    Returns:
+        str: Assessment prompt template or None if not found
     """
-    assessment_prompt = f"""You are assessing the quality of a Javadoc comment for a Java {item['type']}.
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    assessment_prompt_path = os.path.join(script_dir, 'ASSESSMENT-PROMPT.md')
+
+    if os.path.exists(assessment_prompt_path):
+        try:
+            with open(assessment_prompt_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            print(f"Warning: Failed to load ASSESSMENT-PROMPT.md: {e}", file=sys.stderr)
+
+    # Fallback to hardcoded prompt if file not found
+    return """You are assessing the quality of a Javadoc comment for a Java {item_type}.
 
 ITEM DETAILS:
-Name: {item['name']}
-Signature: {item.get('signature', '')}
+Name: {item_name}
+Signature: {item_signature}
 
 EXISTING JAVADOC:
 {existing_javadoc}
 
 IMPLEMENTATION CODE:
-{item.get('implementation_code', '')}
+{implementation_code}
 
 Assess whether this Javadoc needs improvement. Consider:
 1. Is it accurate and complete?
@@ -180,6 +193,25 @@ Respond with ONLY one word:
 - "GOOD" if the Javadoc is adequate and doesn't need improvement
 - "IMPROVE" if the Javadoc needs to be regenerated
 """
+
+
+def assess_javadoc_quality(client, item, existing_javadoc):
+    """Assess the quality of existing Javadoc using Haiku.
+
+    Returns True if the Javadoc needs improvement, False otherwise.
+    """
+    # Load assessment prompt template
+    prompt_template = load_assessment_prompt()
+
+    # Format the prompt with item details
+    assessment_prompt = prompt_template.format(
+        item_type=item['type'],
+        item_name=item['name'],
+        item_signature=item.get('signature', ''),
+        modifiers=item.get('modifiers', ''),
+        existing_javadoc=existing_javadoc,
+        implementation_code=item.get('implementation_code', '')
+    )
 
     try:
         response = client.messages.create(
@@ -257,6 +289,7 @@ def initialize_usage_stats(client):
         'total_tokens': 0,
         'total_cost': 0.0,
         'items_processed': 0,
+        'items_bypassed_by_heuristics': 0,
         'credits_info': None
     }
 
@@ -307,11 +340,15 @@ def print_items_summary(items_needing_docs):
         existing = "✔" if item.get('existing_javadoc') else "✗"
         print(f"  - {item['type']}: {item['name']} (existing: {existing})")
 
-def process_item_with_pipeline(item, java_content, client, prompt_template, total_usage_stats):
-    """Process a single item through the quality assessment pipeline.
+def process_item_with_pipeline(item, java_content, client, prompt_template, total_usage_stats, file_path):
+    """Process a single item through the 3-stage quality assessment pipeline.
+
+    Stage 1: Heuristic checks (free, fast)
+    Stage 2: Haiku assessment (only if heuristics fail)
+    Stage 3: Opus generation (only if Haiku says IMPROVE)
 
     For items without existing Javadoc: generate 1 version with Opus
-    For items with existing Javadoc: assess with Haiku, then generate 2 versions if needed
+    For items with existing Javadoc: run through 3-stage pipeline
 
     Args:
         item: Item dictionary
@@ -319,6 +356,7 @@ def process_item_with_pipeline(item, java_content, client, prompt_template, tota
         client: Anthropic client
         prompt_template: Prompt template string
         total_usage_stats: Dictionary of total usage stats to update
+        file_path: Path to the Java source file (for git diff checks)
 
     Returns:
         dict: Result dictionary with 'javadoc', 'alternatives', and 'used_existing' keys
@@ -339,28 +377,55 @@ def process_item_with_pipeline(item, java_content, client, prompt_template, tota
             }
         return None
 
-    # Case 2: Has existing Javadoc - assess quality with Haiku
-    print(f"\nAssessing existing Javadoc for {item['type']}: {item['name']}...")
-    needs_improvement, assessment_usage = assess_javadoc_quality(
-        client, item, existing_javadoc['content']
+    # Case 2: Has existing Javadoc - run through 3-stage pipeline
+    print(f"\nProcessing existing Javadoc for {item['type']}: {item['name']}...")
+
+    # STAGE 1: Heuristic checks (free, fast)
+    print(f"  Stage 1: Running heuristic checks...")
+    heuristic_result = run_heuristic_checks(
+        item=item,
+        existing_javadoc=existing_javadoc['content'],
+        file_path=file_path,
+        strict_mode=True
     )
 
-    if assessment_usage:
-        update_usage_stats(total_usage_stats, assessment_usage)
-        print(f"  Assessment: {'needs improvement' if needs_improvement else 'looks good'} "
-              f"({assessment_usage['total_tokens']} tokens, ${assessment_usage['estimated_cost']:.4f})")
-
-    # Case 2a: Existing Javadoc is good - keep it
-    if not needs_improvement:
-        print(f"✅ Keeping existing Javadoc")
+    # If heuristics pass, trust them and skip AI assessment (cost optimization)
+    if should_skip_ai_assessment(heuristic_result):
+        print(f"  ✅ Heuristics PASS - keeping existing Javadoc (bypassed AI assessment)")
+        total_usage_stats['items_bypassed_by_heuristics'] += 1
         return {
             'javadoc': existing_javadoc['content'],
             'alternatives': None,
             'used_existing': True
         }
 
-    # Case 2b: Needs improvement - generate 2 versions with Opus
-    print(f"  Generating 2 alternative versions with Opus...")
+    # Heuristics failed - report reasons and proceed to AI assessment
+    print(f"  ⚠️  Heuristics FAIL - issues found:")
+    for reason in heuristic_result.reasons:
+        print(f"      - {reason}")
+
+    # STAGE 2: Haiku assessment (only if heuristics failed)
+    print(f"  Stage 2: Running Haiku quality assessment...")
+    needs_improvement, assessment_usage = assess_javadoc_quality(
+        client, item, existing_javadoc['content']
+    )
+
+    if assessment_usage:
+        update_usage_stats(total_usage_stats, assessment_usage)
+        print(f"  Assessment: {'IMPROVE' if needs_improvement else 'GOOD'} "
+              f"({assessment_usage['total_tokens']} tokens, ${assessment_usage['estimated_cost']:.4f})")
+
+    # If Haiku says it's good despite heuristic warnings, keep existing
+    if not needs_improvement:
+        print(f"✅ Haiku overrides heuristics - keeping existing Javadoc")
+        return {
+            'javadoc': existing_javadoc['content'],
+            'alternatives': None,
+            'used_existing': True
+        }
+
+    # STAGE 3: Opus generation - generate 2 versions + keep original (3 total)
+    print(f"  Stage 3: Generating 2 alternative versions with Opus...")
 
     versions = []
     for i in range(2):
@@ -377,10 +442,21 @@ def process_item_with_pipeline(item, java_content, client, prompt_template, tota
         print(f"❌ Failed to generate any versions")
         return None
 
-    # Use first version as primary, store second as alternative
+    # Use first version as primary, store both alternatives (version 2 + original)
+    alternatives = []
+    if len(versions) > 1:
+        alternatives.append({
+            'label': 'Alternative 1',
+            'content': versions[1]
+        })
+    alternatives.append({
+        'label': 'Original',
+        'content': existing_javadoc['content']
+    })
+
     return {
         'javadoc': versions[0],
-        'alternatives': versions[1] if len(versions) > 1 else None,
+        'alternatives': alternatives,
         'used_existing': False
     }
 
@@ -422,12 +498,13 @@ def print_generation_result(item_name, doc_content, usage_info):
     """
     print(f"✅ Generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
 
-def generate_all_javadocs(items_needing_docs, java_content, client, prompt_template, total_usage_stats):
+def generate_all_javadocs(items_needing_docs, java_content, file_path, client, prompt_template, total_usage_stats):
     """Generate Javadoc for all items using the quality assessment pipeline.
 
     Args:
         items_needing_docs: List of items needing documentation
         java_content: Full Java file content
+        file_path: Path to the Java source file
         client: Anthropic client
         prompt_template: Prompt template string
         total_usage_stats: Dictionary of total usage stats
@@ -441,18 +518,18 @@ def generate_all_javadocs(items_needing_docs, java_content, client, prompt_templ
     alternatives_map = {}
 
     for item in items_needing_docs:
-        result = process_item_with_pipeline(item, java_content, client, prompt_template, total_usage_stats)
+        result = process_item_with_pipeline(item, java_content, client, prompt_template, total_usage_stats, file_path)
 
         if result:
             item['javadoc'] = result['javadoc']
             items_with_javadoc.append(item)
 
-            # Store alternatives if any
+            # Store alternatives if any (now a list of dicts with label and content)
             if result.get('alternatives'):
                 alternatives_map[item['name']] = {
                     'item': item,
                     'primary': result['javadoc'],
-                    'alternative': result['alternatives']
+                    'alternatives': result['alternatives']  # List of {label, content}
                 }
         else:
             print(f"❌ Failed to generate Javadoc for {item['name']}")
@@ -486,7 +563,7 @@ def process_single_java_file(java_file, client, prompt_template, total_usage_sta
             return False, {}
 
         print_items_summary(items_needing_docs)
-        items_with_javadoc, alternatives_map = generate_all_javadocs(items_needing_docs, java_content, client, prompt_template, total_usage_stats)
+        items_with_javadoc, alternatives_map = generate_all_javadocs(items_needing_docs, java_content, java_file, client, prompt_template, total_usage_stats)
 
         if items_with_javadoc:
             write_updated_file(java_file, java_content, items_with_javadoc)
@@ -539,6 +616,7 @@ def print_final_summary(java_files, files_modified, total_usage_stats, commit_af
     print(f"Files processed: {len(java_files)}")
     print(f"Files modified: {len(files_modified)}")
     print(f"Items documented: {total_usage_stats['items_processed']}")
+    print(f"Items bypassed by heuristics: {total_usage_stats['items_bypassed_by_heuristics']}")
     print(f"Total tokens used: {total_usage_stats['total_tokens']}")
     print(f"Estimated cost: ${total_usage_stats['total_cost']:.4f}")
 
@@ -566,7 +644,7 @@ def create_alternatives_comment(all_alternatives):
     comment_parts = [
         "## Alternative Javadoc Versions Available",
         "",
-        "The AI generated multiple Javadoc versions for some methods. Review and choose which version to keep:",
+        "The AI generated multiple Javadoc versions for review. Choose which version to keep:",
         ""
     ]
 
@@ -574,20 +652,27 @@ def create_alternatives_comment(all_alternatives):
         comment_parts.append(f"### File: `{file_path}`")
         comment_parts.append("")
 
-        for item_name, alternatives in alternatives_map.items():
-            item = alternatives['item']
+        for item_name, alternatives_data in alternatives_map.items():
+            item = alternatives_data['item']
             comment_parts.append(f"#### {item['type'].capitalize()}: `{item_name}` (line {item['line']})")
             comment_parts.append("")
-            comment_parts.append("**Version 1 (Currently Applied):**")
+
+            # Primary version (currently applied)
+            comment_parts.append("**Primary Version (Currently Applied):**")
             comment_parts.append("```java")
-            comment_parts.append(alternatives['primary'])
+            comment_parts.append(alternatives_data['primary'])
             comment_parts.append("```")
             comment_parts.append("")
-            comment_parts.append("**Version 2 (Alternative):**")
-            comment_parts.append("```java")
-            comment_parts.append(alternatives['alternative'])
-            comment_parts.append("```")
-            comment_parts.append("")
+
+            # Alternative versions (list of {label, content})
+            for alt in alternatives_data['alternatives']:
+                label = alt['label']
+                content = alt['content']
+                comment_parts.append(f"**{label}:**")
+                comment_parts.append("```java")
+                comment_parts.append(content)
+                comment_parts.append("```")
+                comment_parts.append("")
 
     return '\n'.join(comment_parts)
 
