@@ -9,10 +9,14 @@ import sys
 import re
 from tree_sitter import Language, Parser
 
-# Configuration constants for Javadoc generation thresholds
-MIN_METHOD_LINES = 10  # Minimum lines required to document a method
-MIN_FILE_LINES = 30    # Minimum lines required to document a file
-METHOD_INDENT = '    ' # Standard method body indentation
+# Import configuration constants from central location
+from constants import MIN_METHOD_LINES, MIN_FILE_LINES, METHOD_INDENT
+
+# Import logger
+from logger import get_logger
+
+# Initialize logger
+logger = get_logger(__name__)
 
 def parse_existing_javadoc(javadoc_content):
     """Parse existing Javadoc to extract @param, @return, and other tags."""
@@ -333,9 +337,9 @@ def get_java_parser():
         import tree_sitter_java
         java_language = Language(tree_sitter_java.language())
     except ImportError:
-        print("Error: Could not load tree-sitter-java. Please install: pip install tree-sitter-java", file=sys.stderr)
+        logger.error("Could not load tree-sitter-java. Please install: pip install tree-sitter-java")
         sys.exit(1)
-    
+
     parser = Parser(java_language)
     return parser
 
@@ -722,98 +726,19 @@ def extract_prompt_from_markdown(content):
     matches = re.findall(r'```\n(.*?)\n```', content, re.DOTALL)
     return '\n\n'.join(matches) if matches else ""
 
-def load_prompt_file(filepath):
-    """Load a single prompt file and extract content from markdown.
-
-    Args:
-        filepath: Path to prompt file
-
-    Returns:
-        str: Extracted prompt or None on failure
-    """
-    if not os.path.exists(filepath):
-        return None
-
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read()
-        return extract_prompt_from_markdown(content)
-    except Exception as e:
-        print(f"Warning: Could not read {filepath}: {e}", file=sys.stderr)
-        return None
-
-def merge_prompts(base_prompt, customer_prompt):
-    """Merge base and customer prompts.
-
-    Args:
-        base_prompt: Base prompt string (may be None or empty)
-        customer_prompt: Customer prompt string (may be None or empty)
-
-    Returns:
-        str: Merged prompt, or None if both are empty
-    """
-    if not base_prompt and not customer_prompt:
-        return None
-    if not base_prompt:
-        return customer_prompt
-    if not customer_prompt:
-        return base_prompt
-    return base_prompt + "\n\n" + customer_prompt
-
-def get_default_prompt():
-    """Get the default hardcoded prompt template.
-
-    Returns:
-        str: Default prompt template
-    """
-    return """You are a Javadoc generator. Generate ONLY a Javadoc comment block for this Java {item_type}:
-
-Name: {item_name}
-Signature: {item_signature}
-
-IMPLEMENTATION CODE:
-{implementation_code}
-
-{existing_content}
-
-CORE RULES:
-1. Your response must be EXACTLY a Javadoc comment block
-2. Start with /** on the first line
-3. End with */ on the last line
-4. No explanatory text before or after
-5. No "Here is..." or "I notice..." or any conversational text
-6. Include @param tags for all parameters (if any)
-7. Include @return tag for non-void methods
-8. Include @throws tags for all exceptions that can be thrown
-9. Write clear, concise descriptions based on what the code ACTUALLY does
-10. Use proper grammar and punctuation
-
-GENERATE ONLY THE JAVADOC COMMENT BLOCK NOW:
-"""
-
 def load_prompt_template():
-    """Load and merge prompt templates from BASE-PROMPT.md and CUSTOMER-PROMPT.md.
-
-    CUSTOMER-PROMPT.md takes precedence over BASE-PROMPT.md.
-    Falls back to legacy CLAUDE-PROMPT.md if the new files don't exist.
+    """Load prompt template from BASE-PROMPT.md.
 
     Returns:
         str: Prompt template
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    base_prompt_path = os.path.join(script_dir, 'BASE-PROMPT.md')
 
-    base_prompt = load_prompt_file(os.path.join(script_dir, 'BASE-PROMPT.md'))
-    customer_prompt = load_prompt_file(os.path.join(script_dir, 'CUSTOMER-PROMPT.md'))
+    with open(base_prompt_path, 'r', encoding='utf-8') as f:
+        content = f.read()
 
-    merged_prompt = merge_prompts(base_prompt, customer_prompt)
-    if merged_prompt:
-        return merged_prompt
-
-    legacy_prompt = load_prompt_file(os.path.join(script_dir, 'CLAUDE-PROMPT.md'))
-    if legacy_prompt:
-        return legacy_prompt
-
-    return get_default_prompt()
+    return extract_prompt_from_markdown(content)
 
 def extract_javadoc_from_response(response_text):
     """Extract the Javadoc comment block from Claude's response.

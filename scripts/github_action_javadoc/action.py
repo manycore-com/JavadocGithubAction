@@ -15,21 +15,29 @@ from javadoc_common import (
 )
 from heuristic_checks import run_heuristic_checks, should_skip_ai_assessment
 
-# API Configuration
-CLAUDE_MODEL_OPUS = "claude-opus-4-1-20250805"
-CLAUDE_MODEL_HAIKU = "claude-3-5-haiku-20241022"
-MAX_TOKENS = 5000
-OPUS_INPUT_TOKEN_COST = 0.000015   # Cost per input token in USD for Opus
-OPUS_OUTPUT_TOKEN_COST = 0.000075  # Cost per output token in USD for Opus
-HAIKU_INPUT_TOKEN_COST = 0.000001  # Cost per input token in USD for Haiku
-HAIKU_OUTPUT_TOKEN_COST = 0.000005 # Cost per output token in USD for Haiku
+# Import constants from central configuration
+from constants import (
+    CLAUDE_MODEL_OPUS,
+    CLAUDE_MODEL_HAIKU,
+    MAX_TOKENS,
+    OPUS_INPUT_TOKEN_COST,
+    OPUS_OUTPUT_TOKEN_COST,
+    HAIKU_INPUT_TOKEN_COST,
+    HAIKU_OUTPUT_TOKEN_COST
+)
+
+# Import logger
+from logger import get_logger
+
+# Initialize logger
+logger = get_logger(__name__)
 
 def get_changed_java_files():
     """Get list of Java files changed in the current PR."""
     try:
         # Get the base branch (usually main or master)
         base_ref = os.environ.get('GITHUB_BASE_REF', 'main')
-        
+
         # Get changed files between base branch and current branch
         result = subprocess.run(
             ['git', 'diff', '--name-only', f'origin/{base_ref}...HEAD'],
@@ -37,24 +45,24 @@ def get_changed_java_files():
             text=True,
             check=True
         )
-        
+
         changed_files = result.stdout.strip().split('\n')
         java_files = [f for f in changed_files if f.endswith('.java') and os.path.exists(f)]
-        
-        print(f"Found {len(java_files)} changed Java files:")
+
+        logger.info(f"Found {len(java_files)} changed Java files:")
         for f in java_files:
-            print(f"  - {f}")
-        
+            logger.info(f"  - {f}")
+
         return java_files
-    
+
     except subprocess.CalledProcessError as e:
-        print(f"Error getting changed files: {e}", file=sys.stderr)
+        logger.error(f"Error getting changed files: {e}")
         return []
 
 def commit_changes(files_modified, total_usage_stats=None):
     """Commit the changes made to Java files with cost information."""
     if not files_modified:
-        print("No files were modified.")
+        logger.info("No files were modified.")
         return
     
     try:
@@ -90,10 +98,10 @@ def commit_changes(files_modified, total_usage_stats=None):
         
         # Commit the changes
         subprocess.run(['git', 'commit', '-m', commit_message], check=True)
-        print(f"✅ Committed changes for {len(files_modified)} files")
+        logger.success(f"Committed changes for {len(files_modified)} files")
         
     except subprocess.CalledProcessError as e:
-        print(f"Error committing changes: {e}", file=sys.stderr)
+        logger.error(f"Error committing changes: {e}")
 
 def generate_javadoc(client, item, java_content, prompt_template=None):
     """Generate Javadoc comment using Claude API."""
@@ -149,50 +157,20 @@ def generate_javadoc(client, item, java_content, prompt_template=None):
         return extracted_content, usage_info
         
     except Exception as e:
-        print(f"Error generating Javadoc for {item['name']}: {e}", file=sys.stderr)
+        logger.error(f"Error generating Javadoc for {item['name']}: {e}")
         return None, None
 
 def load_assessment_prompt():
     """Load the assessment prompt template from ASSESSMENT-PROMPT.md.
 
     Returns:
-        str: Assessment prompt template or None if not found
+        str: Assessment prompt template
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
     assessment_prompt_path = os.path.join(script_dir, 'ASSESSMENT-PROMPT.md')
 
-    if os.path.exists(assessment_prompt_path):
-        try:
-            with open(assessment_prompt_path, 'r', encoding='utf-8') as f:
-                return f.read()
-        except Exception as e:
-            print(f"Warning: Failed to load ASSESSMENT-PROMPT.md: {e}", file=sys.stderr)
-
-    # Fallback to hardcoded prompt if file not found
-    return """You are assessing the quality of a Javadoc comment for a Java {item_type}.
-
-ITEM DETAILS:
-Name: {item_name}
-Signature: {item_signature}
-
-EXISTING JAVADOC:
-{existing_javadoc}
-
-IMPLEMENTATION CODE:
-{implementation_code}
-
-Assess whether this Javadoc needs improvement. Consider:
-1. Is it accurate and complete?
-2. Does it properly document all parameters with @param tags?
-3. Does it properly document the return value with @return tag (for non-void methods)?
-4. Does it document exceptions with @throws tags?
-5. Is it clear and helpful?
-6. Does it match what the code actually does?
-
-Respond with ONLY one word:
-- "GOOD" if the Javadoc is adequate and doesn't need improvement
-- "IMPROVE" if the Javadoc needs to be regenerated
-"""
+    with open(assessment_prompt_path, 'r', encoding='utf-8') as f:
+        return f.read()
 
 
 def assess_javadoc_quality(client, item, existing_javadoc):
@@ -234,7 +212,7 @@ def assess_javadoc_quality(client, item, existing_javadoc):
         return needs_improvement, usage_info
 
     except Exception as e:
-        print(f"Error assessing Javadoc quality for {item['name']}: {e}", file=sys.stderr)
+        logger.error(f"Error assessing Javadoc quality for {item['name']}: {e}")
         # On error, default to not needing improvement to avoid unnecessary regeneration
         return False, None
 
@@ -245,7 +223,7 @@ def get_credits_info(client):
         # In a real implementation, you might track usage locally or use other methods
         return {"credits_remaining": "Unknown", "credits_used": "Unknown"}
     except Exception as e:
-        print(f"Warning: Could not get credits info: {e}", file=sys.stderr)
+        logger.warning(f"Could not get credits info: {e}")
         return None
 
 def setup_environment(single_file):
@@ -257,7 +235,7 @@ def setup_environment(single_file):
     # Determine mode and get files
     if single_file:
         if not os.path.exists(single_file):
-            print(f"Error: File {single_file} does not exist", file=sys.stderr)
+            logger.error(f"File {single_file} does not exist")
             sys.exit(1)
         java_files = [single_file]
         commit_after = False
@@ -268,7 +246,7 @@ def setup_environment(single_file):
     # Get API key
     api_key = os.environ.get('ANTHROPIC_API_KEY')
     if not api_key:
-        print("Error: ANTHROPIC_API_KEY environment variable is required", file=sys.stderr)
+        logger.error("ANTHROPIC_API_KEY environment variable is required")
         sys.exit(1)
 
     return {
@@ -327,7 +305,7 @@ def write_updated_file(file_path, java_content, items_with_javadoc):
     with open(file_path, 'w', encoding='utf-8') as f:
         f.write(updated_content)
 
-    print(f"✅ Updated {file_path} with {len(items_with_javadoc)} Javadoc comments")
+    logger.success(f"Updated {file_path} with {len(items_with_javadoc)} Javadoc comments")
 
 def print_items_summary(items_needing_docs):
     """Print summary of items found needing documentation.
@@ -335,10 +313,10 @@ def print_items_summary(items_needing_docs):
     Args:
         items_needing_docs: List of items needing documentation
     """
-    print(f"Found {len(items_needing_docs)} items needing documentation:")
+    logger.info(f"Found {len(items_needing_docs)} items needing documentation:")
     for item in items_needing_docs:
         existing = "✔" if item.get('existing_javadoc') else "✗"
-        print(f"  - {item['type']}: {item['name']} (existing: {existing})")
+        logger.info(f"  - {item['type']}: {item['name']} (existing: {existing})")
 
 def process_item_with_pipeline(item, java_content, client, prompt_template, total_usage_stats, file_path):
     """Process a single item through the 3-stage quality assessment pipeline.
@@ -365,11 +343,11 @@ def process_item_with_pipeline(item, java_content, client, prompt_template, tota
 
     # Case 1: No existing Javadoc - generate 1 version
     if not existing_javadoc:
-        print(f"\nGenerating Javadoc for {item['type']}: {item['name']} (no existing javadoc)...")
+        logger.info(f"\nGenerating Javadoc for {item['type']}: {item['name']} (no existing javadoc)...")
         doc_content, usage_info = generate_javadoc(client, item, java_content, prompt_template)
         if doc_content and usage_info:
             update_usage_stats(total_usage_stats, usage_info)
-            print(f"✅ Generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
+            logger.success(f"Generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
             return {
                 'javadoc': doc_content,
                 'alternatives': None,
@@ -378,10 +356,10 @@ def process_item_with_pipeline(item, java_content, client, prompt_template, tota
         return None
 
     # Case 2: Has existing Javadoc - run through 3-stage pipeline
-    print(f"\nProcessing existing Javadoc for {item['type']}: {item['name']}...")
+    logger.info(f"\nProcessing existing Javadoc for {item['type']}: {item['name']}...")
 
     # STAGE 1: Heuristic checks (free, fast)
-    print(f"  Stage 1: Running heuristic checks...")
+    logger.info(f"  Stage 1: Running heuristic checks...")
     heuristic_result = run_heuristic_checks(
         item=item,
         existing_javadoc=existing_javadoc['content'],
@@ -389,9 +367,13 @@ def process_item_with_pipeline(item, java_content, client, prompt_template, tota
         strict_mode=True
     )
 
+    # Check if we should force AI evaluation (for debugging)
+    force_ai_eval = os.environ.get('FORCE_AI_EVAL') == 'true'
+
     # If heuristics pass, trust them and skip AI assessment (cost optimization)
-    if should_skip_ai_assessment(heuristic_result):
-        print(f"  ✅ Heuristics PASS - keeping existing Javadoc (bypassed AI assessment)")
+    # Unless FORCE_AI_EVAL is set to force pipeline evaluation for debugging
+    if should_skip_ai_assessment(heuristic_result) and not force_ai_eval:
+        logger.info(f"  ✅ Heuristics PASS - keeping existing Javadoc (bypassed AI assessment)")
         total_usage_stats['items_bypassed_by_heuristics'] += 1
         return {
             'javadoc': existing_javadoc['content'],
@@ -399,25 +381,28 @@ def process_item_with_pipeline(item, java_content, client, prompt_template, tota
             'used_existing': True
         }
 
+    if force_ai_eval and heuristic_result.passed:
+        logger.info(f"  🔧 FORCE_AI_EVAL enabled - proceeding to AI assessment despite heuristics passing")
+
     # Heuristics failed - report reasons and proceed to AI assessment
-    print(f"  ⚠️  Heuristics FAIL - issues found:")
+    logger.info(f"  ⚠️  Heuristics FAIL - issues found:")
     for reason in heuristic_result.reasons:
-        print(f"      - {reason}")
+        logger.info(f"      - {reason}")
 
     # STAGE 2: Haiku assessment (only if heuristics failed)
-    print(f"  Stage 2: Running Haiku quality assessment...")
+    logger.info(f"  Stage 2: Running Haiku quality assessment...")
     needs_improvement, assessment_usage = assess_javadoc_quality(
         client, item, existing_javadoc['content']
     )
 
     if assessment_usage:
         update_usage_stats(total_usage_stats, assessment_usage)
-        print(f"  Assessment: {'IMPROVE' if needs_improvement else 'GOOD'} "
-              f"({assessment_usage['total_tokens']} tokens, ${assessment_usage['estimated_cost']:.4f})")
+        logger.info(f"  Assessment: {'IMPROVE' if needs_improvement else 'GOOD'} "
+                    f"({assessment_usage['total_tokens']} tokens, ${assessment_usage['estimated_cost']:.4f})")
 
     # If Haiku says it's good despite heuristic warnings, keep existing
     if not needs_improvement:
-        print(f"✅ Haiku overrides heuristics - keeping existing Javadoc")
+        logger.success(f"Haiku overrides heuristics - keeping existing Javadoc")
         return {
             'javadoc': existing_javadoc['content'],
             'alternatives': None,
@@ -425,21 +410,21 @@ def process_item_with_pipeline(item, java_content, client, prompt_template, tota
         }
 
     # STAGE 3: Opus generation - generate 2 versions + keep original (3 total)
-    print(f"  Stage 3: Generating 2 alternative versions with Opus...")
+    logger.info(f"  Stage 3: Generating 2 alternative versions with Opus...")
 
     versions = []
     for i in range(2):
-        print(f"    Generating version {i+1}...")
+        logger.info(f"    Generating version {i+1}...")
         doc_content, usage_info = generate_javadoc(client, item, java_content, prompt_template)
         if doc_content and usage_info:
             versions.append(doc_content)
             update_usage_stats(total_usage_stats, usage_info)
-            print(f"    ✅ Version {i+1} generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
+            logger.info(f"    ✅ Version {i+1} generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
         else:
-            print(f"    ❌ Failed to generate version {i+1}")
+            logger.info(f"    ❌ Failed to generate version {i+1}")
 
     if len(versions) == 0:
-        print(f"❌ Failed to generate any versions")
+        logger.error(f"Failed to generate any versions")
         return None
 
     # Use first version as primary, store both alternatives (version 2 + original)
@@ -472,7 +457,7 @@ def generate_javadoc_for_item(item, java_content, client, prompt_template):
     Returns:
         tuple: (doc_content, usage_info) or (None, None) on failure
     """
-    print(f"\nGenerating Javadoc for {item['type']}: {item['name']}...")
+    logger.info(f"\nGenerating Javadoc for {item['type']}: {item['name']}...")
     return generate_javadoc(client, item, java_content, prompt_template)
 
 def update_usage_stats(total_usage_stats, usage_info):
@@ -496,7 +481,7 @@ def print_generation_result(item_name, doc_content, usage_info):
         doc_content: Generated documentation content
         usage_info: Usage information dictionary
     """
-    print(f"✅ Generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
+    logger.success(f"Generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
 
 def generate_all_javadocs(items_needing_docs, java_content, file_path, client, prompt_template, total_usage_stats):
     """Generate Javadoc for all items using the quality assessment pipeline.
@@ -532,7 +517,7 @@ def generate_all_javadocs(items_needing_docs, java_content, file_path, client, p
                     'alternatives': result['alternatives']  # List of {label, content}
                 }
         else:
-            print(f"❌ Failed to generate Javadoc for {item['name']}")
+            logger.error(f"Failed to generate Javadoc for {item['name']}")
 
     return items_with_javadoc, alternatives_map
 
@@ -550,16 +535,16 @@ def process_single_java_file(java_file, client, prompt_template, total_usage_sta
             - was_modified: True if file was modified
             - alternatives_map: Dict of alternative Javadoc versions for this file
     """
-    print(f"\n{'='*60}")
-    print(f"Processing: {java_file}")
-    print('='*60)
+    logger.separator()
+    logger.info(f"Processing: {java_file}")
+    logger.separator()
 
     try:
         java_content = read_java_file(java_file)
         items_needing_docs = parse_java_file(java_content)
 
         if not items_needing_docs:
-            print(f"No items needing documentation found in {java_file}")
+            logger.info(f"No items needing documentation found in {java_file}")
             return False, {}
 
         print_items_summary(items_needing_docs)
@@ -572,7 +557,7 @@ def process_single_java_file(java_file, client, prompt_template, total_usage_sta
         return False, {}
 
     except Exception as e:
-        print(f"Error processing {java_file}: {e}\n{traceback.format_exc()}", file=sys.stderr)
+        logger.error(f"Error processing {java_file}: {e}\n{traceback.format_exc()}")
         return False, {}
 
 def process_all_files(java_files, client, prompt_template, total_usage_stats):
@@ -610,24 +595,24 @@ def print_final_summary(java_files, files_modified, total_usage_stats, commit_af
         total_usage_stats: Dictionary of total usage stats
         commit_after: Whether files will be committed
     """
-    print(f"\n{'='*60}")
-    print("SUMMARY")
-    print('='*60)
-    print(f"Files processed: {len(java_files)}")
-    print(f"Files modified: {len(files_modified)}")
-    print(f"Items documented: {total_usage_stats['items_processed']}")
-    print(f"Items bypassed by heuristics: {total_usage_stats['items_bypassed_by_heuristics']}")
-    print(f"Total tokens used: {total_usage_stats['total_tokens']}")
-    print(f"Estimated cost: ${total_usage_stats['total_cost']:.4f}")
+    logger.separator()
+    logger.info("SUMMARY")
+    logger.separator()
+    logger.info(f"Files processed: {len(java_files)}")
+    logger.info(f"Files modified: {len(files_modified)}")
+    logger.info(f"Items documented: {total_usage_stats['items_processed']}")
+    logger.info(f"Items bypassed by heuristics: {total_usage_stats['items_bypassed_by_heuristics']}")
+    logger.info(f"Total tokens used: {total_usage_stats['total_tokens']}")
+    logger.info(f"Estimated cost: ${total_usage_stats['total_cost']:.4f}")
 
     if not files_modified:
-        print("No files were modified.")
+        logger.info("No files were modified.")
         return
 
     if commit_after:
         commit_changes(files_modified, total_usage_stats)
     else:
-        print(f"\n✅ Successfully modified {len(files_modified)} file(s) in debug mode (no commit)")
+        logger.info(f"\n✅ Successfully modified {len(files_modified)} file(s) in debug mode (no commit)")
 
 def create_alternatives_comment(all_alternatives):
     """Create a markdown comment with alternative Javadoc versions for the PR.
@@ -704,16 +689,16 @@ def post_alternatives_to_pr(all_alternatives):
             check=True
         )
 
-        print(f"\n✅ Posted {len(all_alternatives)} alternative Javadoc version(s) to PR")
+        logger.info(f"\n✅ Posted {len(all_alternatives)} alternative Javadoc version(s) to PR")
 
         # Clean up temp file
         os.unlink(temp_file)
 
     except subprocess.CalledProcessError as e:
-        print(f"Warning: Could not post alternatives to PR: {e}", file=sys.stderr)
-        print(f"  You can manually review the alternatives in the output above", file=sys.stderr)
+        logger.warning(f"Could not post alternatives to PR: {e}")
+        logger.info("  You can manually review the alternatives in the output above")
     except Exception as e:
-        print(f"Warning: Could not post alternatives to PR: {e}", file=sys.stderr)
+        logger.warning(f"Could not post alternatives to PR: {e}")
 
 def main(single_file=None):
     """Main entry point.
@@ -725,7 +710,7 @@ def main(single_file=None):
     config = setup_environment(single_file)
 
     if not config['java_files']:
-        print("No Java files found in PR changes.")
+        logger.info("No Java files found in PR changes.")
         return
 
     client = Anthropic(api_key=config['api_key'])

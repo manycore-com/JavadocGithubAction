@@ -4,6 +4,10 @@ Heuristic checks for Javadoc quality assessment (Stage 1).
 This module implements fast, free heuristic checks to identify obvious
 javadoc issues before expensive AI model calls. Only items that fail
 heuristics will proceed to Haiku assessment.
+
+Note: This module uses tree-sitter structured data for accurate code analysis.
+Parameters are provided as dictionaries with 'type' and 'name' keys from
+tree-sitter parsing, not raw strings.
 """
 
 import re
@@ -47,7 +51,18 @@ def check_javadoc_length(existing_javadoc: str) -> Tuple[bool, str]:
     if not existing_javadoc:
         return False, ""
 
-    lines = [l.strip() for l in existing_javadoc.strip().split('\n') if l.strip() and not l.strip().startswith('*')]
+    # Extract content lines (not /** or */)
+    lines = []
+    for line in existing_javadoc.strip().split('\n'):
+        stripped = line.strip()
+        if stripped and stripped != '/**' and stripped != '*/':
+            # Remove leading * and whitespace
+            if stripped.startswith('*'):
+                stripped = stripped[1:].strip()
+            if stripped:
+                lines.append(stripped)
+
+    # Count non-@ tag lines as description
     meaningful_lines = [l for l in lines if not l.startswith('@')]
 
     # Strict: Flag if less than 2 lines of actual description
@@ -89,7 +104,7 @@ def check_param_mismatch(item: Dict, existing_javadoc: str) -> Tuple[bool, str]:
         return False, ""
 
     parsed = parse_existing_javadoc(existing_javadoc)
-    param_tags = parsed.get('params', [])
+    param_tags = parsed.get('params', {})  # Dict: {param_name: description}
 
     # Check for classes with @param tags
     if item['type'] in ['class', 'interface', 'enum', 'record']:
@@ -101,20 +116,25 @@ def check_param_mismatch(item: Dict, existing_javadoc: str) -> Tuple[bool, str]:
     if item['type'] in ['method', 'constructor']:
         actual_params = item.get('parameters', [])
 
-        # Extract parameter names from signature
+        # Extract parameter names from tree-sitter structured data
+        # actual_params is a list of dicts: [{'type': 'String', 'name': 'input'}, ...]
         param_names = []
         for param in actual_params:
-            # param format: "Type name" or just "Type"
-            parts = param.strip().split()
-            if len(parts) >= 2:
-                param_names.append(parts[-1])
+            if isinstance(param, dict) and 'name' in param:
+                param_names.append(param['name'])
+            elif isinstance(param, str):
+                # Fallback for legacy string format "Type name"
+                parts = param.strip().split()
+                if len(parts) >= 2:
+                    param_names.append(parts[-1])
 
         # Strict: Check count mismatch
         if len(param_tags) != len(param_names):
             return True, f"Parameter count mismatch: {len(param_names)} params, {len(param_tags)} @param tags"
 
         # Strict: Check if all parameters are documented
-        documented_params = {p.split()[0] for p in param_tags}
+        # param_tags is a dict, so iterating gives us the keys (param names)
+        documented_params = set(param_tags.keys())
         for param_name in param_names:
             if param_name not in documented_params:
                 return True, f"Parameter '{param_name}' not documented"
@@ -147,9 +167,9 @@ def check_missing_return(item: Dict, existing_javadoc: str) -> Tuple[bool, str]:
         return False, ""
 
     parsed = parse_existing_javadoc(existing_javadoc)
-    return_tags = parsed.get('returns', [])
+    return_tag = parsed.get('return')
 
-    if not return_tags or len(return_tags[0].strip()) < 5:
+    if not return_tag or len(return_tag.strip()) < 5:
         return True, f"Missing or trivial @return tag for {return_type} method"
 
     return False, ""
