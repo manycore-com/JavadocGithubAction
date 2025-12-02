@@ -2,172 +2,180 @@
 """
 Code analysis utilities for Java files.
 Analyzes method complexity, exceptions, and determines what needs documentation.
+Uses tree-sitter for robust AST-based analysis.
 """
 
-import re
 from constants import MIN_METHOD_LINES, MIN_FILE_LINES
+from tree_sitter_utils import get_node_text, walk_tree
 
 
-def extract_method_lines(lines, start_line):
-    """Extract lines of a method/constructor by counting braces.
+def extract_method_lines(node, source_code):
+    """Extract lines of a method/constructor using tree-sitter AST.
 
     Args:
-        lines: List of file lines
-        start_line: 1-indexed starting line number
+        node: Tree-sitter node (method_declaration or constructor_declaration)
+        source_code: Full source code string
 
     Returns:
-        list: Lines that make up the method/constructor body
+        list: Lines that make up the method/constructor
     """
-    start_idx = start_line - 1
-
-    if start_idx >= len(lines):
-        return []
-
-    brace_count = 0
-    method_lines = []
-    found_opening_brace = False
-
-    for i in range(start_idx, len(lines)):
-        line = lines[i]
-        method_lines.append(line)
-
-        # Count braces to find method end
-        brace_count += line.count('{') - line.count('}')
-        if '{' in line and not found_opening_brace:
-            found_opening_brace = True
-
-        # Stop when we've closed the method
-        if found_opening_brace and brace_count <= 0:
-            break
-
-    return method_lines
+    method_text = get_node_text(node, source_code)
+    return method_text.split('\n')
 
 
-def extract_implementation_code(lines, item):
-    """Extract the implementation code for a method or class."""
-    start_line = item.get('line', 1)
+def extract_implementation_code(node, source_code):
+    """Extract the implementation code for a method or class using tree-sitter.
 
-    # For methods/constructors, extract until the closing brace
-    if item.get('type') in ['method', 'constructor']:
-        method_lines = extract_method_lines(lines, start_line)
-        return '\n'.join(method_lines)
+    Args:
+        node: Tree-sitter node (method_declaration, constructor_declaration, or class_declaration)
+        source_code: Full source code string
 
-    # For classes, just return a reasonable portion
-    start_idx = start_line - 1
-    return '\n'.join(lines[start_idx:start_idx + 10])
+    Returns:
+        str: The implementation code
+    """
+    return get_node_text(node, source_code)
 
 
-def analyze_potential_exceptions(implementation_code, item_type):
-    """Analyze code to identify potential exceptions that should be documented."""
-    if not implementation_code:
+def analyze_potential_exceptions(node, source_code):
+    """Analyze code using tree-sitter AST to identify potential exceptions.
+
+    Args:
+        node: Tree-sitter node (method_declaration or constructor_declaration)
+        source_code: Full source code string
+
+    Returns:
+        list: Potential exceptions that should be documented
+    """
+    if not node:
         return []
 
     analysis = []
-    code_lower = implementation_code.lower()
 
-    # Look for explicit throws
-    throw_matches = re.findall(r'throw\s+new\s+(\w+)', implementation_code)
-    for exception in throw_matches:
-        analysis.append(f"Explicitly throws {exception}")
+    # Find explicit throw statements
+    throw_nodes = []
+    walk_tree(node, 'throw_statement', throw_nodes, source_code)
+    for throw_node in throw_nodes:
+        # Extract the exception type from the throw statement
+        for child in throw_node.children:
+            if child.type == 'object_creation_expression':
+                for obj_child in child.children:
+                    if obj_child.type == 'type_identifier':
+                        exception_name = get_node_text(obj_child, source_code)
+                        analysis.append(f"Explicitly throws {exception_name}")
+                        break
 
-    # Look for array access that might cause IndexOutOfBoundsException
-    if '[' in implementation_code and ']' in implementation_code:
+    # Find array access expressions
+    array_access_nodes = []
+    walk_tree(node, 'array_access', array_access_nodes, source_code)
+    if array_access_nodes:
         analysis.append("Array access - consider IndexOutOfBoundsException")
 
-    # Look for null pointer potential
-    if '.length' in code_lower or '.get(' in code_lower or '.put(' in code_lower:
+    # Find field access and method invocations (potential NullPointerException)
+    field_access_nodes = []
+    method_invocation_nodes = []
+    walk_tree(node, 'field_access', field_access_nodes, source_code)
+    walk_tree(node, 'method_invocation', method_invocation_nodes, source_code)
+    if field_access_nodes or method_invocation_nodes:
         analysis.append("Object method calls - consider NullPointerException")
 
-    # Look for arithmetic that might cause ArithmeticException
-    if '/' in implementation_code:
-        analysis.append("Division operation - consider ArithmeticException for division by zero")
+    # Find binary expressions with division
+    binary_nodes = []
+    walk_tree(node, 'binary_expression', binary_nodes, source_code)
+    for binary_node in binary_nodes:
+        binary_text = get_node_text(binary_node, source_code)
+        if '/' in binary_text or '%' in binary_text:
+            analysis.append("Division operation - consider ArithmeticException for division by zero")
+            break
 
-    # Look for string operations
-    if any(word in code_lower for word in ['substring', 'charAt', 'split']):
-        analysis.append("String operations - consider StringIndexOutOfBoundsException")
+    # Find string method invocations
+    for method_node in method_invocation_nodes:
+        method_text = get_node_text(method_node, source_code)
+        if any(word in method_text for word in ['substring', 'charAt', 'split']):
+            analysis.append("String operations - consider StringIndexOutOfBoundsException")
+            break
 
     return analysis
 
 
-def is_getter_or_setter(method_name, method_body):
-    """Check if a method is a simple getter or setter."""
-    # Helper to count meaningful lines (excluding braces and comments)
-    def count_meaningful_lines(body):
-        return len([line.strip() for line in body.split('\n')
-                   if line.strip() and line.strip() not in ['{', '}']
-                   and not line.strip().startswith('//')])
+def is_getter_or_setter(method_name, method_node, source_code):
+    """Check if a method is a simple getter or setter using tree-sitter AST.
 
-    # Simple getter pattern: starts with "get" or "is", has return statement
-    is_getter = (method_name.startswith('get') or method_name.startswith('is')) and 'return ' in method_body
-    if is_getter:
-        return count_meaningful_lines(method_body) <= 2
+    Args:
+        method_name: Name of the method
+        method_node: Tree-sitter node (method_declaration)
+        source_code: Full source code string
 
-    # Simple setter pattern: starts with "set", has assignment
-    is_setter = method_name.startswith('set') and ('=' in method_body or 'this.' in method_body)
-    if is_setter:
-        return count_meaningful_lines(method_body) <= 2
+    Returns:
+        bool: True if method is a simple getter or setter
+    """
+    # Find the method body
+    body_node = None
+    for child in method_node.children:
+        if child.type == 'block':
+            body_node = child
+            break
+
+    if not body_node:
+        return False
+
+    # Count statements in the body (excluding braces)
+    statements = []
+    for child in body_node.children:
+        if child.type not in ['{', '}']:
+            statements.append(child)
+
+    # Simple getter: starts with "get" or "is", has only a return statement
+    if method_name.startswith('get') or method_name.startswith('is'):
+        if len(statements) == 1 and statements[0].type == 'return_statement':
+            return True
+
+    # Simple setter: starts with "set", has only an assignment
+    if method_name.startswith('set'):
+        if len(statements) == 1:
+            # Check if it's an expression statement with assignment
+            if statements[0].type == 'expression_statement':
+                for child in statements[0].children:
+                    if child.type == 'assignment_expression':
+                        return True
 
     return False
 
 
-def count_method_lines(lines, start_line, method_type='method'):
-    """Count the number of lines in a method/constructor implementation."""
-    # Convert to 0-indexed
-    start_idx = start_line - 1
+def count_method_lines(node):
+    """Count the number of lines in a method/constructor using tree-sitter AST.
 
-    if start_idx >= len(lines):
-        return 0
+    Args:
+        node: Tree-sitter node (method_declaration or constructor_declaration)
 
-    brace_count = 0
-    line_count = 0
-    found_opening_brace = False
-
-    for i in range(start_idx, len(lines)):
-        line = lines[i]
-        line_count += 1
-
-        # Count braces to find method end
-        brace_count += line.count('{') - line.count('}')
-        if '{' in line and not found_opening_brace:
-            found_opening_brace = True
-
-        # Stop when we've closed the method
-        if found_opening_brace and brace_count <= 0:
-            break
-
-    return line_count
+    Returns:
+        int: Number of lines in the method/constructor
+    """
+    # Calculate lines from start to end point (inclusive)
+    start_line = node.start_point[0]
+    end_line = node.end_point[0]
+    return end_line - start_line + 1
 
 
-def should_skip_method(method_name, lines, start_line):
-    """Determine if a method should be skipped from Javadoc generation."""
+def should_skip_method(method_name, method_node, source_code):
+    """Determine if a method should be skipped from Javadoc generation using tree-sitter.
+
+    Args:
+        method_name: Name of the method
+        method_node: Tree-sitter node (method_declaration)
+        source_code: Full source code string
+
+    Returns:
+        bool: True if method should be skipped
+    """
     # Count lines in the method
-    line_count = count_method_lines(lines, start_line)
+    line_count = count_method_lines(method_node)
 
     # Skip if method is shorter than minimum threshold
     if line_count < MIN_METHOD_LINES:
         return True
 
-    # Extract method body for getter/setter detection
-    method_lines = []
-    start_idx = start_line - 1
-    brace_count = 0
-    found_opening_brace = False
-
-    for i in range(start_idx, min(len(lines), start_idx + line_count)):
-        line = lines[i]
-        method_lines.append(line)
-
-        brace_count += line.count('{') - line.count('}')
-        if '{' in line and not found_opening_brace:
-            found_opening_brace = True
-
-        if found_opening_brace and brace_count <= 0:
-            break
-
-    method_body = '\n'.join(method_lines)
-
     # Skip if it's a getter or setter
-    if is_getter_or_setter(method_name, method_body):
+    if is_getter_or_setter(method_name, method_node, source_code):
         return True
 
     return False

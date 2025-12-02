@@ -51,7 +51,7 @@ def should_include_class(modifiers, existing_javadoc, item, lines):
     return should_update_javadoc(existing_javadoc.get('parsed', {}), item)
 
 
-def should_include_method(modifiers, method_name, existing_javadoc, item, lines, line_num):
+def should_include_method(modifiers, method_name, existing_javadoc, item, method_node, java_content):
     """Determine if a method should be included for documentation.
 
     Args:
@@ -59,8 +59,8 @@ def should_include_method(modifiers, method_name, existing_javadoc, item, lines,
         method_name: Name of the method
         existing_javadoc: Existing Javadoc dict or None
         item: Item dictionary
-        lines: List of file lines
-        line_num: Line number of the method
+        method_node: Tree-sitter node (method_declaration)
+        java_content: Full Java file content
 
     Returns:
         bool: True if method should be documented
@@ -68,7 +68,7 @@ def should_include_method(modifiers, method_name, existing_javadoc, item, lines,
     if 'public' not in modifiers:
         return False
 
-    if should_skip_method(method_name, lines, line_num):
+    if should_skip_method(method_name, method_node, java_content):
         return False
 
     if not existing_javadoc:
@@ -117,7 +117,7 @@ def create_class_item(node, java_content, lines):
 
     signature = build_class_signature(modifiers, node.type, class_name)
     existing_javadoc = find_javadoc_for_element(lines, line_num)
-    implementation_code = extract_implementation_code(lines, {'type': 'class', 'line': line_num})
+    implementation_code = extract_implementation_code(node, java_content)
 
     item = {
         'type': 'class',
@@ -128,7 +128,7 @@ def create_class_item(node, java_content, lines):
         'documentation': None,
         'existing_javadoc': existing_javadoc,
         'implementation_code': implementation_code,
-        'potential_exceptions': analyze_potential_exceptions(implementation_code, 'class')
+        'potential_exceptions': analyze_potential_exceptions(node, java_content)
     }
 
     if should_include_class(modifiers, existing_javadoc, item, lines):
@@ -158,7 +158,7 @@ def create_method_item(node, java_content, lines):
     return_type = extract_return_type(node, java_content)
     signature = build_method_signature(modifiers, return_type, method_name, params)
     existing_javadoc = find_javadoc_for_element(lines, line_num)
-    implementation_code = extract_implementation_code(lines, {'type': 'method', 'line': line_num})
+    implementation_code = extract_implementation_code(node, java_content)
 
     item = {
         'type': 'method',
@@ -171,10 +171,10 @@ def create_method_item(node, java_content, lines):
         'documentation': None,
         'existing_javadoc': existing_javadoc,
         'implementation_code': implementation_code,
-        'potential_exceptions': analyze_potential_exceptions(implementation_code, 'method')
+        'potential_exceptions': analyze_potential_exceptions(node, java_content)
     }
 
-    if should_include_method(modifiers, method_name, existing_javadoc, item, lines, line_num):
+    if should_include_method(modifiers, method_name, existing_javadoc, item, node, java_content):
         return item
     return None
 
@@ -200,7 +200,7 @@ def create_constructor_item(node, java_content, lines):
     params = extract_parameters(node, java_content)
     signature = build_constructor_signature(modifiers, constructor_name, params)
     existing_javadoc = find_javadoc_for_element(lines, line_num)
-    implementation_code = extract_implementation_code(lines, {'type': 'constructor', 'line': line_num})
+    implementation_code = extract_implementation_code(node, java_content)
 
     item = {
         'type': 'constructor',
@@ -212,7 +212,7 @@ def create_constructor_item(node, java_content, lines):
         'documentation': None,
         'existing_javadoc': existing_javadoc,
         'implementation_code': implementation_code,
-        'potential_exceptions': analyze_potential_exceptions(implementation_code, 'constructor')
+        'potential_exceptions': analyze_potential_exceptions(node, java_content)
     }
 
     if should_include_constructor(modifiers, existing_javadoc, item):

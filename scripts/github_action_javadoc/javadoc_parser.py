@@ -79,8 +79,9 @@ def should_update_javadoc(existing_parsed, item):
     if not existing_parsed or not existing_parsed.get('description'):
         return True
 
-    # Always update if it's clearly generic or placeholder content
     description = existing_parsed.get('description', '').lower()
+
+    # Always update if it's clearly generic or placeholder content
     generic_phrases = [
         'todo', 'fixme', 'placeholder', 'default constructor',
         'getter for', 'setter for', 'returns the', 'sets the'
@@ -89,13 +90,53 @@ def should_update_javadoc(existing_parsed, item):
     if any(phrase in description for phrase in generic_phrases):
         return True
 
-    # For classes, check if there are incorrectly used @param tags
-    # Regular classes should not have @param tags - if they do, update the Javadoc
-    # But records should have @param tags for their components
+    # Check for superficial descriptions that just restate the signature
+    # These are descriptions that merely describe what the code IS rather than what it DOES
+    superficial_indicators = [
+        'implements',  # "implements ClassFileTransformer interface"
+        'extends',     # "extends BaseClass"
+        'class for',   # "A class for handling..."
+        'method for',  # "A method for processing..."
+        'function that',  # "A function that..."
+    ]
+
+    # If the description is short AND contains superficial indicators, it's likely low-quality
+    word_count = len(description.split())
+    if word_count < 30 and any(indicator in description for indicator in superficial_indicators):
+        return True
+
+    # Check for very short descriptions (likely inadequate)
+    # A good class-level Javadoc should be at least 50 words
+    # A good method-level Javadoc should be at least 20 words
+    if item.get('type') == 'class':
+        if word_count < 50:
+            return True
+    elif item.get('type') in ['method', 'constructor']:
+        if word_count < 20:
+            return True
+
+    # Check for missing important documentation sections based on code complexity
+
+    # For classes: check if complex classes lack usage examples
     if item.get('type') == 'class':
         is_record = 'record' in item.get('signature', '').lower()
+
+        # Regular classes should not have @param tags - if they do, update the Javadoc
         if not is_record and existing_parsed.get('params'):
             return True
+
+        # Complex classes (interfaces, abstract classes) should have usage examples
+        signature = item.get('signature', '').lower()
+        is_interface = 'interface' in signature
+        is_abstract = 'abstract' in signature
+
+        if is_interface or is_abstract:
+            # Check if there's a usage example (look for @code or <pre> tags in other_tags)
+            has_example = any('@code' in tag.lower() or '<pre>' in tag.lower() or 'example' in tag.lower()
+                            for tag in existing_parsed.get('other_tags', []))
+            if not has_example and word_count < 80:
+                # No example and short description = likely needs improvement
+                return True
 
     # For methods, check if we have parameter or return info that's missing
     if item.get('type') == 'method':
@@ -110,6 +151,23 @@ def should_update_javadoc(existing_parsed, item):
                                    str(return_type) != 'void' and
                                    not existing_parsed.get('return'))
         if has_return_without_docs:
+            return True
+
+        # If method has potential exceptions but no @throws tags, consider updating
+        potential_exceptions = item.get('potential_exceptions', [])
+        has_exceptions_without_docs = potential_exceptions and not existing_parsed.get('throws')
+        if has_exceptions_without_docs:
+            return True
+
+    # For constructors, check similar things
+    if item.get('type') == 'constructor':
+        has_params_without_docs = item.get('parameters') and not existing_parsed.get('params')
+        if has_params_without_docs:
+            return True
+
+        potential_exceptions = item.get('potential_exceptions', [])
+        has_exceptions_without_docs = potential_exceptions and not existing_parsed.get('throws')
+        if has_exceptions_without_docs:
             return True
 
     # Otherwise, preserve existing content
