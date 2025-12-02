@@ -402,7 +402,7 @@ def process_item_with_pipeline(item, java_content, client, prompt_template, tota
 
     # If Haiku says it's good despite heuristic warnings, keep existing
     if not needs_improvement:
-        logger.success(f"Haiku overrides heuristics - keeping existing Javadoc")
+        logger.success(f"  ✅ Haiku assessment: GOOD - keeping existing Javadoc (overrides heuristic warnings)")
         return {
             'javadoc': existing_javadoc['content'],
             'alternatives': None,
