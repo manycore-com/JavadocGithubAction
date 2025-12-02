@@ -33,7 +33,7 @@ ACTUAL CODE TO DOCUMENT:
 FULL FILE CONTEXT:
 {java_content}
 
-	INSTRUCTIONS:
+INSTRUCTIONS:
 Generate comprehensive Javadoc documentation that describes WHAT the code does:
 
 - Focus on the contract/API from a user's perspective
