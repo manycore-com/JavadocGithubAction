@@ -614,6 +614,50 @@ def process_all_files(java_files, client, prompt_template, total_usage_stats):
 
     return files_modified, all_alternatives
 
+def print_alternatives_to_console(all_alternatives):
+    """Print alternative Javadoc versions to console for debug mode.
+
+    Args:
+        all_alternatives: Dict mapping file paths to their alternatives
+    """
+    if not all_alternatives:
+        return
+
+    logger.separator()
+    logger.info("ALTERNATIVE JAVADOC VERSIONS")
+    logger.separator()
+    logger.info("The AI generated alternatives for review. Compare versions below:\n")
+
+    for file_path, alternatives_map in all_alternatives.items():
+        logger.info(f"📁 File: {file_path}")
+        logger.info("")
+
+        for item_name, alternatives_data in alternatives_map.items():
+            item = alternatives_data['item']
+            logger.info(f"  📝 {item['type'].capitalize()}: {item_name} (line {item['line']})")
+            logger.info("")
+
+            # Primary version (currently applied)
+            logger.info(f"  ✅ PRIMARY VERSION (Currently Applied):")
+            logger.info("  " + "─" * 70)
+            for line in alternatives_data['primary'].split('\n'):
+                logger.info(f"  {line}")
+            logger.info("  " + "─" * 70)
+            logger.info("")
+
+            # Alternative versions
+            for alt in alternatives_data['alternatives']:
+                label = alt['label']
+                content = alt['content']
+                logger.info(f"  🔄 {label.upper()}:")
+                logger.info("  " + "─" * 70)
+                for line in content.split('\n'):
+                    logger.info(f"  {line}")
+                logger.info("  " + "─" * 70)
+                logger.info("")
+
+    logger.separator()
+
 def print_final_summary(java_files, files_modified, total_usage_stats, commit_after):
     """Print final summary of processing.
 
@@ -755,9 +799,14 @@ def main(single_file=None):
 
     print_final_summary(config['java_files'], files_modified, total_usage_stats, config['commit_after'])
 
-    # Post alternatives to PR if in GitHub Action mode and there are alternatives
-    if config['commit_after'] and all_alternatives:
-        post_alternatives_to_pr(all_alternatives)
+    # Handle alternatives based on mode
+    if all_alternatives:
+        if config['commit_after']:
+            # GitHub Action mode: Post alternatives to PR
+            post_alternatives_to_pr(all_alternatives)
+        else:
+            # Debug mode: Print alternatives to console
+            print_alternatives_to_console(all_alternatives)
 
 if __name__ == "__main__":
     single_file = sys.argv[1] if len(sys.argv) > 1 else None
