@@ -809,5 +809,17 @@ def main(single_file=None):
             print_alternatives_to_console(all_alternatives)
 
 if __name__ == "__main__":
-    single_file = sys.argv[1] if len(sys.argv) > 1 else None
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Generate Javadoc for Java files')
+    parser.add_argument('file', nargs='?', help='Single Java file to process (debug mode)')
+    parser.add_argument('--commit', action='store_true', help='Commit changes (GitHub Action mode, ignored)')
+
+    args = parser.parse_args()
+
+    # single_file determines the mode:
+    # - If provided: debug mode (single file, no commit, show alternatives to console)
+    # - If None: PR mode (changed files, commit, post alternatives to PR)
+    single_file = args.file
+
     main(single_file=single_file)
