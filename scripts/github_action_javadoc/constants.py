@@ -19,3 +19,8 @@ HAIKU_OUTPUT_TOKEN_COST = 0.000005
 MIN_METHOD_LINES = 10  # Minimum lines required to document a method
 MIN_FILE_LINES = 30    # Minimum lines required to document a file
 METHOD_INDENT = '    ' # Standard method body indentation
+
+# Version generation
+# Number of versions to generate (always 1)
+# Removed multi-version support as it generated duplicates without value
+DEFAULT_NUM_VERSIONS = 1

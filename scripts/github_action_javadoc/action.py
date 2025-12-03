@@ -23,7 +23,8 @@ from constants import (
     OPUS_INPUT_TOKEN_COST,
     OPUS_OUTPUT_TOKEN_COST,
     HAIKU_INPUT_TOKEN_COST,
-    HAIKU_OUTPUT_TOKEN_COST
+    HAIKU_OUTPUT_TOKEN_COST,
+    DEFAULT_NUM_VERSIONS
 )
 
 # Import logger
@@ -31,6 +32,27 @@ from logger import get_logger
 
 # Initialize logger
 logger = get_logger(__name__)
+
+def get_num_versions():
+    """Get the number of versions to generate from environment or default.
+
+    Returns:
+        int: Always returns 1 (multi-version support removed)
+    """
+    # Always return 1 - multi-version support removed as it generated duplicates
+    return DEFAULT_NUM_VERSIONS
+
+def get_variation_instructions(num_versions):
+    """Get variation instructions for generating versions.
+
+    Args:
+        num_versions: Number of versions to generate (always 1)
+
+    Returns:
+        list: List with single empty instruction (variation not used)
+    """
+    # Return single empty instruction - variations removed as they didn't create meaningful differences
+    return [None]
 
 def get_changed_java_files():
     """Get list of Java files changed in the current PR."""
@@ -103,8 +125,16 @@ def commit_changes(files_modified, total_usage_stats=None):
     except subprocess.CalledProcessError as e:
         logger.error(f"Error committing changes: {e}")
 
-def generate_javadoc(client, item, java_content, prompt_template=None):
-    """Generate Javadoc comment using Claude API."""
+def generate_javadoc(client, item, java_content, prompt_template=None, variation_instruction=None):
+    """Generate Javadoc comment using Claude API.
+
+    Args:
+        client: Anthropic API client
+        item: Item dictionary with code details
+        java_content: Full Java file content
+        prompt_template: Optional prompt template string
+        variation_instruction: Optional instruction to encourage variation in output
+    """
     if prompt_template is None:
         prompt_template = load_prompt_template()
 
@@ -133,8 +163,12 @@ def generate_javadoc(client, item, java_content, prompt_template=None):
         return_type=item.get('return_type', ''),
         implementation_code=item.get('implementation_code', ''),
         existing_content=existing_content,
-        java_content=java_content 
+        java_content=java_content
     )
+
+    # Add variation instruction if provided
+    if variation_instruction:
+        prompt = f"{prompt}\n\n{variation_instruction}"
 
     try:
         response = client.messages.create(
@@ -341,19 +375,24 @@ def process_item_with_pipeline(item, java_content, client, prompt_template, tota
     """
     existing_javadoc = item.get('existing_javadoc')
 
-    # Case 1: No existing Javadoc - generate 1 version
+    # Case 1: No existing Javadoc - generate single version
     if not existing_javadoc:
         logger.info(f"\nGenerating Javadoc for {item['type']}: {item['name']} (no existing javadoc)...")
-        doc_content, usage_info = generate_javadoc(client, item, java_content, prompt_template)
-        if doc_content and usage_info:
-            update_usage_stats(total_usage_stats, usage_info)
-            logger.success(f"Generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
-            return {
-                'javadoc': doc_content,
-                'alternatives': None,
-                'used_existing': False
-            }
-        return None
+
+        doc_content, usage_info = generate_javadoc(client, item, java_content, prompt_template, variation_instruction=None)
+
+        if not doc_content or not usage_info:
+            logger.error(f"Failed to generate Javadoc")
+            return None
+
+        update_usage_stats(total_usage_stats, usage_info)
+        logger.info(f"  ✅ Generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
+
+        return {
+            'javadoc': doc_content,
+            'alternatives': None,  # No alternatives for new javadoc
+            'used_existing': False
+        }
 
     # Case 2: Has existing Javadoc - run through 3-stage pipeline
     logger.info(f"\nProcessing existing Javadoc for {item['type']}: {item['name']}...")
@@ -409,38 +448,27 @@ def process_item_with_pipeline(item, java_content, client, prompt_template, tota
             'used_existing': True
         }
 
-    # STAGE 3: Opus generation - generate 2 versions + keep original (3 total)
-    logger.info(f"  Stage 3: Generating 2 alternative versions with Opus...")
+    # STAGE 3: Opus generation - generate single improved version + keep original
+    logger.info(f"  Stage 3: Generating improved version with Opus...")
 
-    versions = []
-    for i in range(2):
-        logger.info(f"    Generating version {i+1}...")
-        doc_content, usage_info = generate_javadoc(client, item, java_content, prompt_template)
-        if doc_content and usage_info:
-            versions.append(doc_content)
-            update_usage_stats(total_usage_stats, usage_info)
-            logger.info(f"    ✅ Version {i+1} generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
-        else:
-            logger.info(f"    ❌ Failed to generate version {i+1}")
+    doc_content, usage_info = generate_javadoc(client, item, java_content, prompt_template, variation_instruction=None)
 
-    if len(versions) == 0:
-        logger.error(f"Failed to generate any versions")
+    if not doc_content or not usage_info:
+        logger.error(f"Failed to generate improved Javadoc")
         return None
 
-    # Use first version as primary, store both alternatives (version 2 + original)
-    alternatives = []
-    if len(versions) > 1:
-        alternatives.append({
-            'label': 'Alternative 1',
-            'content': versions[1]
-        })
-    alternatives.append({
+    update_usage_stats(total_usage_stats, usage_info)
+    logger.info(f"    ✅ Generated ({usage_info['total_tokens']} tokens, ${usage_info['estimated_cost']:.4f})")
+
+    # Include the original as an alternative so user can revert if needed
+    alternatives = [{
         'label': 'Original',
         'content': existing_javadoc['content']
-    })
+    }]
+    logger.info(f"  Total alternatives available: 1 (original)")
 
     return {
-        'javadoc': versions[0],
+        'javadoc': doc_content,
         'alternatives': alternatives,
         'used_existing': False
     }
@@ -668,10 +696,16 @@ def post_alternatives_to_pr(all_alternatives):
         all_alternatives: Dict mapping file paths to their alternatives
     """
     if not all_alternatives:
+        logger.info("No alternatives to post to PR")
         return
+
+    logger.info(f"Posting alternatives for {len(all_alternatives)} file(s) to PR")
+    for file_path, alternatives_map in all_alternatives.items():
+        logger.info(f"  {file_path}: {len(alternatives_map)} item(s) with alternatives")
 
     comment = create_alternatives_comment(all_alternatives)
     if not comment:
+        logger.warning("Failed to create alternatives comment")
         return
 
     try:
