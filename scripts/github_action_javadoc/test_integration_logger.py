@@ -5,12 +5,9 @@ Integration test to verify logger works with action.py functions.
 
 import os
 import sys
-import tempfile
 
 # Add the script directory to the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from logger import get_logger, LogLevel
 
 # Import action.py functions that use the logger
 from action import (
