@@ -760,7 +760,7 @@ def post_alternatives_to_pr(all_alternatives):
             temp_file = f.name
 
         # Post comment to PR using gh CLI
-        result = subprocess.run(
+        subprocess.run(
             ['gh', 'pr', 'comment', '--body-file', temp_file],
             capture_output=True,
             text=True,
