@@ -156,6 +156,128 @@ def count_method_lines(node):
     return end_line - start_line + 1
 
 
+def is_trivial_method(method_node, source_code):
+    """Check if a method is trivial (too simple to warrant Javadoc documentation).
+
+    A trivial method is one that contains only simple operations without complex logic.
+    Examples: methods that only set fields to null, single-statement methods,
+    simple delegating methods, or methods with only basic assertions.
+
+    Args:
+        method_node: Tree-sitter node (method_declaration)
+        source_code: Full source code string
+
+    Returns:
+        bool: True if method is trivial and should skip documentation
+    """
+    # Find the method body
+    body_node = None
+    for child in method_node.children:
+        if child.type == 'block':
+            body_node = child
+            break
+
+    if not body_node:
+        return True  # No body = trivial (abstract/interface method)
+
+    # Count different types of nodes
+    control_flow_nodes = 0
+    statements = []
+    null_assignments = 0
+    simple_assertions = 0
+
+    def analyze_node(node, depth=0):
+        nonlocal control_flow_nodes, null_assignments, simple_assertions
+
+        # Control flow structures indicate complexity
+        if node.type in ['if_statement', 'for_statement', 'while_statement',
+                         'do_statement', 'switch_expression', 'try_statement',
+                         'enhanced_for_statement']:
+            control_flow_nodes += 1
+
+        # Check for null assignments (e.g., "x = null")
+        if node.type == 'assignment_expression':
+            # Check if right side is null
+            right_side = None
+            for child in node.children:
+                if child.type == 'null_literal':
+                    null_assignments += 1
+                    break
+
+        # Check for simple assertions (single method call with 1-2 args)
+        if node.type == 'expression_statement':
+            for child in node.children:
+                if child.type == 'method_invocation':
+                    method_text = get_node_text(child, source_code)
+                    # Common test assertions with simple arguments
+                    if any(assertion in method_text for assertion in
+                           ['assertEquals(', 'assertNotEquals(', 'assertTrue(',
+                            'assertFalse(', 'assertNull(', 'assertNotNull(']):
+                        # Check if it's a simple call (not nested, max 2 args)
+                        if method_text.count('(') <= 2:  # Simple call
+                            simple_assertions += 1
+
+        # Recurse into children
+        for child in node.children:
+            analyze_node(child, depth + 1)
+
+    # Collect statements (excluding braces)
+    for child in body_node.children:
+        if child.type not in ['{', '}']:
+            statements.append(child)
+            analyze_node(child)
+
+    # Trivial if:
+    # 1. Has control flow = NOT trivial (complex logic)
+    if control_flow_nodes > 0:
+        return False
+
+    # 2. Single statement = trivial
+    if len(statements) == 1:
+        return True
+
+    # 3. Mostly null assignments = trivial cleanup method
+    #    (e.g., tearDown with null assignments + logging/println calls)
+    if null_assignments >= len(statements) * 0.5:  # At least 50% are null assignments
+        return True
+
+    # 4. Only simple assertions (1-3 statements) = trivial test
+    if simple_assertions > 0 and simple_assertions >= len(statements) - 1 and len(statements) <= 3:
+        return True
+
+    # 5. Very few statements (2-3) with no complex operations = likely trivial
+    if len(statements) <= 3:
+        # Check if statements are just simple assignments or method calls
+        complex_operations = 0
+        for stmt in statements:
+            stmt_text = get_node_text(stmt, source_code)
+            # Look for operators that indicate complexity (not just print/log calls)
+            if any(op in stmt_text for op in ['+', '-', '*', '/', '%', '&&', '||', '?', ':']):
+                # Exclude simple operations in print statements
+                if 'println' not in stmt_text and 'log' not in stmt_text.lower():
+                    complex_operations += 1
+
+        # If no complex operations in simple method, it's trivial
+        if complex_operations == 0:
+            return True
+
+    # 6. More than 5 statements but mostly trivial operations
+    if len(statements) <= 10:
+        # Count trivial operations (null assignments, simple calls)
+        trivial_operations = null_assignments
+        for stmt in statements:
+            stmt_text = get_node_text(stmt, source_code)
+            # Count simple logging/printing as trivial
+            if any(call in stmt_text for call in ['println', 'print(', 'log.', 'logger.']):
+                trivial_operations += 1
+
+        # If 80%+ are trivial operations = trivial method
+        if trivial_operations >= len(statements) * 0.8:
+            return True
+
+    return False
+
+
 def should_skip_method(method_name, method_node, source_code):
     """Determine if a method should be skipped from Javadoc generation using tree-sitter.
 
@@ -176,6 +298,10 @@ def should_skip_method(method_name, method_node, source_code):
 
     # Skip if it's a getter or setter
     if is_getter_or_setter(method_name, method_node, source_code):
+        return True
+
+    # Skip if it's trivial (simple logic that doesn't need documentation)
+    if is_trivial_method(method_node, source_code):
         return True
 
     return False
