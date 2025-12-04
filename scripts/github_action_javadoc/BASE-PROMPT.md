@@ -34,32 +34,50 @@ FULL FILE CONTEXT:
 {java_content}
 
 INSTRUCTIONS:
-Generate comprehensive Javadoc documentation that describes WHAT the code does:
+Generate Javadoc documentation ONLY for complex or non-obvious code. Follow best practices:
 
+DOCUMENTATION PHILOSOPHY:
+- Document only what needs explanation - simple, self-evident methods should rely on clear naming
 - Focus on the contract/API from a user's perspective
-- Include @param, @return, @throws tags as appropriate
-- NO implementation details - just the public contract
-- Explain the purpose, behavior, and usage
-- Document *all* invariant, preconditions, postconditions, and side effects
+- Explain WHY and WHAT, never HOW (no implementation details)
+- Be concise - quality over quantity
+
+WHEN TO DOCUMENT:
+✓ Complex logic that isn't self-evident
+✓ Non-obvious behavior or edge cases
+✓ Public APIs with important contracts
+✓ Methods with side effects or state changes
+
+WHEN NOT TO DOCUMENT (these are filtered out, but as a guideline):
+✗ Simple test methods with obvious assertions
+✗ Trivial getters/setters
+✗ Methods whose purpose is clear from name and signature
+✗ Single-statement methods with obvious behavior
+
+DOCUMENTATION CONTENT:
+- Include @param, @return, @throws tags as appropriate (but keep descriptions concise)
+- Document *all* invariants, preconditions, postconditions, and side effects
+- Explain purpose, behavior, and usage patterns
+- Add examples only for complex or ambiguous APIs
 
 OUTPUT FORMAT:
 /**
- * [Clear description of what this class/method/constructor does]
- * [Additional details about behavior, usage patterns, or important notes]
- * [Include examples if helpful for complex APIs]
+ * [Concise, clear description - typically 1-2 sentences]
+ * [Additional context only if needed - edge cases, side effects, usage notes]
  *
- * @param paramName parameter description for users
- * @return what is returned to the caller
- * @throws ExceptionType when this exception is thrown
- * @see RelatedClass or method for cross-references
- * @since version when this was added
+ * @param paramName brief description (no redundancy with obvious names)
+ * @return brief description of what is returned
+ * @throws ExceptionType when this exception occurs
+ * @see RelatedClass (only if genuinely relevant)
  */
 
-IMPORTANT:
+IMPORTANT RULES:
 - Output ONLY the Javadoc comment block, nothing else
 - Do NOT include method signatures or implementation code
+- Be CONCISE - no redundant information
 - Focus on WHAT the code does, not HOW it does it
 - Write for API consumers, not maintainers
-- Use clear, concise language
-- Include examples for complex or non-obvious APIs
+- Avoid over-explaining obvious parameters or simple behavior
+- Class-level documentation: 3-10 lines summarizing purpose and key concepts
+- Method-level documentation: 1-5 lines unless truly complex
 ```

@@ -161,7 +161,7 @@ def is_trivial_method(method_node, source_code):
 
     A trivial method is one that contains only simple operations without complex logic.
     Examples: methods that only set fields to null, single-statement methods,
-    simple delegating methods, or methods with only basic assertions.
+    simple delegating methods, methods with only basic assertions, or test setup/teardown.
 
     Args:
         method_node: Tree-sitter node (method_declaration)
@@ -170,6 +170,20 @@ def is_trivial_method(method_node, source_code):
     Returns:
         bool: True if method is trivial and should skip documentation
     """
+    # Check for test setup/teardown annotations - these are always trivial
+    # (standard test infrastructure that doesn't need documentation)
+    method_text = get_node_text(method_node, source_code)
+    test_infrastructure_annotations = [
+        '@BeforeEach', '@Before',      # JUnit setup
+        '@AfterEach', '@After',        # JUnit teardown
+        '@BeforeAll', '@BeforeClass',  # Static setup
+        '@AfterAll', '@AfterClass',    # Static teardown
+    ]
+
+    for annotation in test_infrastructure_annotations:
+        if annotation in method_text:
+            return True  # Test setup/teardown = trivial
+
     # Find the method body
     body_node = None
     for child in method_node.children:
@@ -204,18 +218,23 @@ def is_trivial_method(method_node, source_code):
                     null_assignments += 1
                     break
 
-        # Check for simple assertions (single method call with 1-2 args)
+        # Check for assertions (common test patterns)
         if node.type == 'expression_statement':
             for child in node.children:
                 if child.type == 'method_invocation':
                     method_text = get_node_text(child, source_code)
-                    # Common test assertions with simple arguments
-                    if any(assertion in method_text for assertion in
-                           ['assertEquals(', 'assertNotEquals(', 'assertTrue(',
-                            'assertFalse(', 'assertNull(', 'assertNotNull(']):
-                        # Check if it's a simple call (not nested, max 2 args)
-                        if method_text.count('(') <= 2:  # Simple call
-                            simple_assertions += 1
+                    # Common test assertions (JUnit 4/5, TestNG, AssertJ)
+                    assertion_patterns = [
+                        'assertEquals(', 'assertNotEquals(', 'assertTrue(',
+                        'assertFalse(', 'assertNull(', 'assertNotNull(',
+                        'assertThat(', 'assertThrows(', 'assertSame(',
+                        'assertNotSame(', 'assertArrayEquals(', 'fail(',
+                        'expect(', 'verify(', 'assert(',
+                    ]
+                    if any(assertion in method_text for assertion in assertion_patterns):
+                        # Count all assertions, even complex ones
+                        # (tests often have nested method calls in assertions)
+                        simple_assertions += 1
 
         # Recurse into children
         for child in node.children:
@@ -227,9 +246,36 @@ def is_trivial_method(method_node, source_code):
             statements.append(child)
             analyze_node(child)
 
+    # Check if this is a @Test method with simple iteration pattern
+    # (common in tests that loop through test data with assertions)
+    is_test_method = '@Test' in method_text
+
     # Trivial if:
-    # 1. Has control flow = NOT trivial (complex logic)
+    # 1. Has control flow but is a simple test iteration pattern
     if control_flow_nodes > 0:
+        # @Test methods with assertions = likely trivial test data iteration
+        # unless they have complex business logic
+        if is_test_method and simple_assertions >= 1:
+            # Check if it's primarily iteration/validation, not complex business logic
+            has_complex_logic = False
+            for stmt in statements:
+                stmt_text = get_node_text(stmt, source_code)
+                # Look for complex operations beyond simple loops + assertions + calls
+                complex_indicators = [
+                    'new Thread', 'synchronized', '.wait(', '.notify(',
+                    'volatile', 'atomic', 'lock', 'semaphore',
+                    'Thread.sleep', 'CompletableFuture', 'ExecutorService',
+                    'Stream.', 'parallel()', 'fork()', 'join(',
+                ]
+                if any(indicator in stmt_text for indicator in complex_indicators):
+                    has_complex_logic = True
+                    break
+
+            # Simple test iteration/validation pattern = trivial
+            if not has_complex_logic:
+                return True
+
+        # Otherwise, control flow = NOT trivial (complex logic)
         return False
 
     # 2. Single statement = trivial
