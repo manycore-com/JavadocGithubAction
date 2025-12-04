@@ -34,46 +34,50 @@ FULL FILE CONTEXT:
 {java_content}
 
 INSTRUCTIONS:
-Generate TWO separate documentation blocks:
+Generate Javadoc documentation ONLY for complex or non-obvious code. Follow best practices:
 
-1. A Javadoc comment (/** ... */) that describes WHAT the code does
-   - Focus on the contract/API from a user's perspective
-   - Include @param, @return, @throws tags as appropriate
-   - NO implementation details - just the public contract
+DOCUMENTATION PHILOSOPHY:
+- Document only what needs explanation - simple, self-evident methods should rely on clear naming
+- Focus on the contract/API from a user's perspective
+- Explain WHY and WHAT, never HOW (no implementation details)
+- Be concise - quality over quantity
 
-2. An implementation notes comment (/* AI Implementation Notes: ... */) for methods/constructors
-   - Explain HOW the code works internally
-   - Include algorithm details, data structures, complexity analysis
-   - Describe state changes, edge cases, important logic flow
-   - This serves as a "state dump" for AI systems
+WHEN TO DOCUMENT:
+✓ Complex logic that isn't self-evident
+✓ Non-obvious behavior or edge cases
+✓ Public APIs with important contracts
+✓ Methods with side effects or state changes
+
+WHEN NOT TO DOCUMENT (these are filtered out, but as a guideline):
+✗ Simple test methods with obvious assertions
+✗ Trivial getters/setters
+✗ Methods whose purpose is clear from name and signature
+✗ Single-statement methods with obvious behavior
+
+DOCUMENTATION CONTENT:
+- Include @param, @return, @throws tags as appropriate (but keep descriptions concise)
+- Document *all* invariants, preconditions, postconditions, and side effects
+- Explain purpose, behavior, and usage patterns
+- Add examples only for complex or ambiguous APIs
 
 OUTPUT FORMAT:
-For classes, generate ONLY the Javadoc:
 /**
- * [Description of what this class represents]
- * [Additional details about the class purpose and usage]
+ * [Concise, clear description - typically 1-2 sentences]
+ * [Additional context only if needed - edge cases, side effects, usage notes]
+ *
+ * @param paramName brief description (no redundancy with obvious names)
+ * @return brief description of what is returned
+ * @throws ExceptionType when this exception occurs
+ * @see RelatedClass (only if genuinely relevant)
  */
 
-For methods and constructors, generate BOTH blocks:
-/**
- * [Description of what this method/constructor does]
- * [Additional details about behavior/contract]
- * 
- * @param paramName parameter description for users
- * @return what is returned to the caller
- * @throws ExceptionType when this exception is thrown
- */
-/* AI Implementation Notes:
- * [Detailed explanation of HOW it works internally]
- * [Algorithm steps, data structures used, complexity analysis]
- * [State changes, edge cases handled, important logic flow]
- */
-
-IMPORTANT:
-- Output ONLY these documentation blocks, nothing else
-- Do NOT include method signatures or code
-- Keep Javadoc focused on WHAT (the contract)
-- Keep implementation notes focused on HOW (the internals)
-- For classes, only generate Javadoc (no implementation notes)
-- For methods/constructors, generate both blocks as shown above
+IMPORTANT RULES:
+- Output ONLY the Javadoc comment block, nothing else
+- Do NOT include method signatures or implementation code
+- Be CONCISE - no redundant information
+- Focus on WHAT the code does, not HOW it does it
+- Write for API consumers, not maintainers
+- Avoid over-explaining obvious parameters or simple behavior
+- Class-level documentation: 3-10 lines summarizing purpose and key concepts
+- Method-level documentation: 1-5 lines unless truly complex
 ```
