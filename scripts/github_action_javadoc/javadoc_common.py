@@ -9,7 +9,7 @@ import sys
 import re
 
 # Import configuration constants from central location
-from constants import MIN_METHOD_LINES, MIN_FILE_LINES, METHOD_INDENT
+from constants import MIN_METHOD_LINES, MIN_FILE_LINES
 
 # Import logger
 from logger import get_logger
