@@ -187,6 +187,11 @@ def check_git_diff_changes(item: Dict, file_path: str) -> Tuple[bool, str]:
         start_line = item.get('start_line')
         end_line = item.get('end_line')
 
+        # If not present at top level, try existing_javadoc dict
+        if (not start_line or not end_line) and isinstance(item.get('existing_javadoc'), dict):
+            start_line = item['existing_javadoc'].get('start_line')
+            end_line = item['existing_javadoc'].get('end_line')
+
         if not start_line or not end_line:
             return False, ""
 
