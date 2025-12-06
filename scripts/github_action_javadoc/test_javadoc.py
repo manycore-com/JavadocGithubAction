@@ -12,15 +12,14 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from javadoc_common import (
-    MIN_METHOD_LINES,
-    MIN_FILE_LINES,
-    METHOD_INDENT,
     should_skip_method,
     should_skip_class,
     parse_existing_javadoc,
     extract_javadoc_from_response,
     detect_indentation,
-    count_method_lines
+    count_method_lines,
+    insert_javadoc,
+    add_javadoc_to_file
 )
 
 from constants import (
@@ -30,7 +29,10 @@ from constants import (
     OPUS_INPUT_TOKEN_COST,
     OPUS_OUTPUT_TOKEN_COST,
     HAIKU_INPUT_TOKEN_COST,
-    HAIKU_OUTPUT_TOKEN_COST
+    HAIKU_OUTPUT_TOKEN_COST,
+    MIN_METHOD_LINES,
+    MIN_FILE_LINES,
+    METHOD_INDENT
 )
 
 from action import load_assessment_prompt
@@ -469,6 +471,116 @@ class TestPromptLoading(unittest.TestCase):
         # Verify there's no try/except or fallback logic
         self.assertNotIn('except', source)
         self.assertNotIn('return """', source)
+
+
+class TestJavadocInsertion(unittest.TestCase):
+    """Test Javadoc insertion with proper formatting."""
+
+    def test_insert_javadoc_adds_blank_line_before_javadoc(self):
+        """Test that inserting javadoc adds a blank line before it when needed."""
+        lines = [
+            "    public void method1() {",
+            "        return 1;",
+            "    }",
+            "    public void method2() {",
+            "        return 2;",
+            "    }"
+        ]
+
+        item = {
+            'line': 4,  # 1-indexed line for method2
+            'name': 'method2'
+        }
+
+        javadoc = """/**
+     * Documentation for method2.
+     */"""
+
+        # Insert javadoc
+        insert_javadoc(lines, item, javadoc)
+
+        # Check that there's a blank line before the javadoc
+        # After insertion, the structure should be:
+        # 0: method1 opening
+        # 1: method1 body
+        # 2: method1 closing
+        # 3: blank line (added)
+        # 4: javadoc line 1
+        # 5: javadoc line 2
+        # 6: javadoc line 3
+        # 7: method2 opening
+        self.assertEqual(lines[3].strip(), '',
+                        f"Expected blank line before javadoc at line 3, got: '{lines[3]}'")
+        self.assertIn('/**', lines[4],
+                     f"Expected javadoc start at line 4, got: '{lines[4]}'")
+
+    def test_insert_javadoc_after_closing_brace(self):
+        """Test inserting javadoc after a closing brace adds blank line."""
+        lines = [
+            "    }",
+            "    public void nextMethod() {"
+        ]
+
+        item = {
+            'line': 2,  # 1-indexed line for nextMethod
+            'name': 'nextMethod'
+        }
+
+        javadoc = """/**
+     * Documentation.
+     */"""
+
+        insert_javadoc(lines, item, javadoc)
+
+        # Should have: }, blank line, javadoc, method
+        self.assertEqual(lines[0].strip(), '}')
+        self.assertEqual(lines[1].strip(), '',
+                        f"Expected blank line after closing brace, got: '{lines[1]}'")
+        self.assertIn('/**', lines[2])
+
+    def test_add_javadoc_to_file_preserves_blank_lines(self):
+        """Test that add_javadoc_to_file maintains proper spacing."""
+        java_content = """public class Test {
+    public void method1() {
+        return 1;
+    }
+    public void method2() {
+        return 2;
+    }
+}"""
+
+        items_with_javadoc = [
+            {
+                'line': 5,
+                'name': 'method2',
+                'javadoc': """/**
+     * Documentation for method2.
+     */"""
+            }
+        ]
+
+        result = add_javadoc_to_file(java_content, items_with_javadoc)
+        lines = result.split('\n')
+
+        # Find the javadoc comment (look for /** followed by method2 in the next few lines)
+        javadoc_start = None
+        for i, line in enumerate(lines):
+            if '/**' in line:
+                # Check if method2 declaration appears within the next 5 lines
+                for j in range(i+1, min(i+6, len(lines))):
+                    if 'public void method2()' in lines[j]:
+                        javadoc_start = i
+                        break
+                if javadoc_start is not None:
+                    break
+
+        self.assertIsNotNone(javadoc_start, "Javadoc should be inserted")
+
+        # Check that there's a blank line before the javadoc
+        if javadoc_start > 0:
+            line_before = lines[javadoc_start - 1]
+            self.assertEqual(line_before.strip(), '',
+                           f"Expected blank line before javadoc, got: '{line_before}'")
 
 
 class TestThreeStagesPipeline(unittest.TestCase):

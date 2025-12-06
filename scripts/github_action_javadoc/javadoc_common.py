@@ -307,12 +307,19 @@ def insert_javadoc(lines, item, javadoc):
     target_line = lines[insert_line] if insert_line < len(lines) else ""
     indentation = detect_indentation(target_line)
 
+    # Add blank line before javadoc if the previous line has content
+    lines_inserted = 0
+    if insert_line > 0 and lines[insert_line - 1].strip():
+        lines.insert(insert_line, '')
+        insert_line += 1
+        lines_inserted += 1
+
     javadoc_lines = javadoc.split('\n')
     for i, javadoc_line in enumerate(javadoc_lines):
         indented_line = indentation + javadoc_line if javadoc_line.strip() else javadoc_line
         lines.insert(insert_line + i, indented_line)
 
-    return len(javadoc_lines)
+    return len(javadoc_lines) + lines_inserted
 
 def add_javadoc_to_file(java_content, items_with_javadoc):
     """Add generated Javadoc comments to the Java file content.
