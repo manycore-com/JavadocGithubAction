@@ -317,15 +317,21 @@ def check_obvious_errors(existing_javadoc: str) -> Tuple[bool, str]:
     issues = []
 
     # Check for malformed tags (@ not at start of tag)
+    # Note: Inline tags like {@link}, {@code}, {@inheritDoc} are valid mid-line
     lines = existing_javadoc.split('\n')
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped and '@' in stripped:
-            # @ symbol should only appear at line start (after *)
+            # @ symbol should only appear at line start (after *) OR inside braces {@ }
             after_star = stripped.lstrip('*').strip()
             if after_star and not after_star.startswith('@') and '@' in after_star:
-                issues.append("Malformed @ tag")
-                break
+                # Check if all @ symbols are inside inline tags {@ }
+                # Remove all inline tags like {@link ...}, {@code ...}, etc.
+                without_inline_tags = re.sub(r'\{@\w+[^}]*\}', '', after_star)
+                # If there's still an @ after removing inline tags, it's malformed
+                if '@' in without_inline_tags:
+                    issues.append("Malformed @ tag")
+                    break
 
     # Check for empty tags
     if re.search(r'@param\s+\w+\s*$', existing_javadoc, re.MULTILINE):
