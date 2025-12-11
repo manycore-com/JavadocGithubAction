@@ -17,7 +17,7 @@ from tree_sitter_utils import (
     build_constructor_signature,
     walk_tree
 )
-from javadoc_parser import find_javadoc_for_element, should_update_javadoc
+from javadoc_parser import find_javadoc_for_element
 from code_analyzer import (
     extract_implementation_code,
     analyze_potential_exceptions,
@@ -45,10 +45,8 @@ def should_include_class(modifiers, existing_javadoc, item, lines):
     if should_skip_class(lines):
         return False
 
-    if not existing_javadoc:
-        return True
-
-    return should_update_javadoc(existing_javadoc.get('parsed', {}), item)
+    # Always include public classes - let heuristic_checks.py decide quality
+    return True
 
 
 def should_include_method(modifiers, method_name, existing_javadoc, item, method_node, java_content):
@@ -71,10 +69,10 @@ def should_include_method(modifiers, method_name, existing_javadoc, item, method
     if should_skip_method(method_name, method_node, java_content):
         return False
 
-    if not existing_javadoc:
-        return True
-
-    return should_update_javadoc(existing_javadoc.get('parsed', {}), item)
+    # Always include public methods - let heuristic_checks.py decide quality
+    # Previously we filtered here with should_update_javadoc, but that missed
+    # quality issues like incomplete sentences that heuristics can catch
+    return True
 
 
 def should_include_constructor(modifiers, existing_javadoc, item):
@@ -91,10 +89,8 @@ def should_include_constructor(modifiers, existing_javadoc, item):
     if 'public' not in modifiers:
         return False
 
-    if not existing_javadoc:
-        return True
-
-    return should_update_javadoc(existing_javadoc.get('parsed', {}), item)
+    # Always include public constructors - let heuristic_checks.py decide quality
+    return True
 
 
 def create_class_item(node, java_content, lines):

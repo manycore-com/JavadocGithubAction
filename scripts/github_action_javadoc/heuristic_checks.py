@@ -239,6 +239,73 @@ def check_git_diff_changes(item: Dict, file_path: str) -> Tuple[bool, str]:
         return False, ""
 
 
+def check_incomplete_description(existing_javadoc: Optional[str]) -> Tuple[bool, str]:
+    """
+    Check for incomplete sentences in the javadoc description.
+
+    Detects descriptions that end abruptly without proper punctuation,
+    like "Removes variables that were defined in this dabb but whose defining stores were not part of the"
+
+    If `existing_javadoc` is None or an empty string, returns (False, "").
+    Returns (has_issue, reason)
+    """
+    if not existing_javadoc:
+        return False, ""
+
+    # Extract description lines (before any @ tags)
+    lines = existing_javadoc.split('\n')
+    description_lines = []
+
+    for line in lines:
+        stripped = line.strip().lstrip('*').strip()
+        # Stop at first @ tag
+        if stripped.startswith('@'):
+            break
+        # Skip javadoc markers
+        if stripped in ['/**', '*/'] or not stripped:
+            continue
+        description_lines.append(stripped)
+
+    if not description_lines:
+        return False, ""
+
+    # Get the last non-empty description line
+    last_line = description_lines[-1]
+
+    # Valid endings for a description
+    valid_endings = ['.', '!', '?', ':', '>', ')', ']', '}', '"', "'", '`']
+    # Also allow HTML closing tags
+    html_closing = ['</p>', '</li>', '</ul>', '</ol>', '</code>', '</pre>', '</blockquote>']
+
+    # Check if description ends properly
+    ends_properly = False
+    for ending in valid_endings:
+        if last_line.endswith(ending):
+            ends_properly = True
+            break
+
+    if not ends_properly:
+        for html_end in html_closing:
+            if last_line.lower().endswith(html_end):
+                ends_properly = True
+                break
+
+    if not ends_properly:
+        # Additional check: if the line ends with common articles/prepositions,
+        # it's very likely incomplete
+        incomplete_indicators = [' the', ' a', ' an', ' of', ' to', ' in', ' for', ' with', ' by', ' from', ' and', ' or']
+        for indicator in incomplete_indicators:
+            if last_line.lower().endswith(indicator):
+                return True, f"Description appears incomplete (ends with '{indicator.strip()}')"
+
+        # If it doesn't end with punctuation and is longer than a few words, flag it
+        word_count = len(last_line.split())
+        if word_count >= 3:
+            return True, "Description doesn't end with proper punctuation"
+
+    return False, ""
+
+
 def check_obvious_errors(existing_javadoc: str) -> Tuple[bool, str]:
     """
     Check for obvious errors in javadoc formatting or content.
@@ -251,15 +318,21 @@ def check_obvious_errors(existing_javadoc: str) -> Tuple[bool, str]:
     issues = []
 
     # Check for malformed tags (@ not at start of tag)
+    # Note: Inline tags like {@link}, {@code}, {@inheritDoc} are valid mid-line
     lines = existing_javadoc.split('\n')
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped and '@' in stripped:
-            # @ symbol should only appear at line start (after *)
+            # @ symbol should only appear at line start (after *) OR inside braces {@ }
             after_star = stripped.lstrip('*').strip()
             if after_star and not after_star.startswith('@') and '@' in after_star:
-                issues.append("Malformed @ tag")
-                break
+                # Check if all @ symbols are inside inline tags {@ }
+                # Remove all inline tags like {@link ...}, {@code ...}, etc.
+                without_inline_tags = re.sub(r'\{@\w+[^}]*\}', '', after_star)
+                # If there's still an @ after removing inline tags, it's malformed
+                if '@' in without_inline_tags:
+                    issues.append("Malformed @ tag")
+                    break
 
     # Check for empty tags
     if re.search(r'@param\s+\w+\s*$', existing_javadoc, re.MULTILINE):
@@ -311,6 +384,7 @@ def run_heuristic_checks(
         check_missing_return(item, existing_javadoc) if existing_javadoc else (False, ""),
         check_git_diff_changes(item, file_path) if strict_mode else (False, ""),
         check_obvious_errors(existing_javadoc) if existing_javadoc else (False, ""),
+        check_incomplete_description(existing_javadoc) if existing_javadoc else (False, ""),
     ]
 
     # Collect all failure reasons

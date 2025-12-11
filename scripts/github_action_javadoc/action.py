@@ -13,7 +13,6 @@ from javadoc_common import (
     extract_javadoc_from_response,
     add_javadoc_to_file
 )
-from heuristic_checks import run_heuristic_checks, should_skip_ai_assessment
 
 # Import constants from central configuration
 from constants import (
@@ -301,7 +300,6 @@ def initialize_usage_stats(client):
         'total_tokens': 0,
         'total_cost': 0.0,
         'items_processed': 0,
-        'items_bypassed_by_heuristics': 0,
         'credits_info': None
     }
 
@@ -353,14 +351,13 @@ def print_items_summary(items_needing_docs):
         logger.info(f"  - {item['type']}: {item['name']} (existing: {existing})")
 
 def process_item_with_pipeline(item, java_content, client, prompt_template, total_usage_stats, file_path):
-    """Process a single item through the 3-stage quality assessment pipeline.
+    """Process a single item through the 2-stage quality assessment pipeline.
 
-    Stage 1: Heuristic checks (free, fast)
-    Stage 2: Haiku assessment (only if heuristics fail)
-    Stage 3: Opus generation (only if Haiku says IMPROVE)
+    Stage 1: Haiku assessment (evaluates existing Javadoc quality)
+    Stage 2: Opus generation (only if Haiku says IMPROVE)
 
-    For items without existing Javadoc: generate 1 version with Opus
-    For items with existing Javadoc: run through 3-stage pipeline
+    For items without existing Javadoc: generate with Opus
+    For items with existing Javadoc: Haiku evaluates, Opus improves if needed
 
     Args:
         item: Item dictionary
@@ -368,7 +365,7 @@ def process_item_with_pipeline(item, java_content, client, prompt_template, tota
         client: Anthropic client
         prompt_template: Prompt template string
         total_usage_stats: Dictionary of total usage stats to update
-        file_path: Path to the Java source file (for git diff checks)
+        file_path: Path to the Java source file
 
     Returns:
         dict: Result dictionary with 'javadoc', 'alternatives', and 'used_existing' keys
@@ -394,42 +391,12 @@ def process_item_with_pipeline(item, java_content, client, prompt_template, tota
             'used_existing': False
         }
 
-    # Case 2: Has existing Javadoc - run through 3-stage pipeline
+    # Case 2: Has existing Javadoc - run through quality pipeline
     logger.info(f"\nProcessing existing Javadoc for {item['type']}: {item['name']}...")
 
-    # STAGE 1: Heuristic checks (free, fast)
-    logger.info(f"  Stage 1: Running heuristic checks...")
-    heuristic_result = run_heuristic_checks(
-        item=item,
-        existing_javadoc=existing_javadoc['content'],
-        file_path=file_path,
-        strict_mode=True
-    )
-
-    # Check if we should force AI evaluation (for debugging)
-    force_ai_eval = os.environ.get('FORCE_AI_EVAL') == 'true'
-
-    # If heuristics pass, trust them and skip AI assessment (cost optimization)
-    # Unless FORCE_AI_EVAL is set to force pipeline evaluation for debugging
-    if should_skip_ai_assessment(heuristic_result) and not force_ai_eval:
-        logger.info(f"  ✅ Heuristics PASS - keeping existing Javadoc (bypassed AI assessment)")
-        total_usage_stats['items_bypassed_by_heuristics'] += 1
-        return {
-            'javadoc': existing_javadoc['content'],
-            'alternatives': None,
-            'used_existing': True
-        }
-
-    if force_ai_eval and heuristic_result.passed:
-        logger.info(f"  🔧 FORCE_AI_EVAL enabled - proceeding to AI assessment despite heuristics passing")
-
-    # Heuristics failed - report reasons and proceed to AI assessment
-    logger.info(f"  ⚠️  Heuristics FAIL - issues found:")
-    for reason in heuristic_result.reasons:
-        logger.info(f"      - {reason}")
-
-    # STAGE 2: Haiku assessment (only if heuristics failed)
-    logger.info(f"  Stage 2: Running Haiku quality assessment...")
+    # Haiku assessment - evaluate all existing Javadoc quality
+    # (Heuristics removed: can't distinguish good human docs from mediocre AI/generated docs)
+    logger.info(f"  Stage 1: Running Haiku quality assessment...")
     needs_improvement, assessment_usage = assess_javadoc_quality(
         client, item, existing_javadoc['content']
     )
@@ -439,17 +406,17 @@ def process_item_with_pipeline(item, java_content, client, prompt_template, tota
         logger.info(f"  Assessment: {'IMPROVE' if needs_improvement else 'GOOD'} "
                     f"({assessment_usage['total_tokens']} tokens, ${assessment_usage['estimated_cost']:.4f})")
 
-    # If Haiku says it's good despite heuristic warnings, keep existing
+    # If Haiku says it's good, keep existing
     if not needs_improvement:
-        logger.success(f"  ✅ Haiku assessment: GOOD - keeping existing Javadoc (overrides heuristic warnings)")
+        logger.success(f"  ✅ Haiku assessment: GOOD - keeping existing Javadoc")
         return {
             'javadoc': existing_javadoc['content'],
             'alternatives': None,
             'used_existing': True
         }
 
-    # STAGE 3: Opus generation - generate single improved version + keep original
-    logger.info(f"  Stage 3: Generating improved version with Opus...")
+    # Stage 2: Opus generation - generate improved version + keep original
+    logger.info(f"  Stage 2: Generating improved version with Opus...")
 
     doc_content, usage_info = generate_javadoc(client, item, java_content, prompt_template, variation_instruction=None)
 
@@ -673,7 +640,6 @@ def print_final_summary(java_files, files_modified, total_usage_stats, commit_af
     logger.info(f"Files processed: {len(java_files)}")
     logger.info(f"Files modified: {len(files_modified)}")
     logger.info(f"Items documented: {total_usage_stats['items_processed']}")
-    logger.info(f"Items bypassed by heuristics: {total_usage_stats['items_bypassed_by_heuristics']}")
     logger.info(f"Total tokens used: {total_usage_stats['total_tokens']}")
     logger.info(f"Estimated cost: ${total_usage_stats['total_cost']:.4f}")
 
