@@ -75,5 +75,5 @@ The pipeline minimizes API costs by filtering at each stage:
 - Methods under 10 lines are skipped (configurable via MIN_METHOD_LINES)
 - Files under 30 lines skip class documentation (MIN_FILE_LINES)
 - Tree-sitter is used for accurate Java parsing (handles generics, annotations properly)
-- Heuristic checks run first to avoid unnecessary API calls
+- Heuristic checks are used for analysis, but all documentation is now assessed by the AI regardless of heuristic results
 - Getters/setters and simple delegation methods are skipped
