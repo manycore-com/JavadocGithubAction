@@ -7,7 +7,15 @@ import java.util.HashMap;
 import java.util.ArrayList;
 
 /**
- * Service for managing users.
+ * Service for managing user lifecycle operations including creation, retrieval, updates, and deactivation.
+ * Provides caching layer for improved performance and supports batch operations with retry logic.
+ * Integrates with email service for user notifications.
+ * 
+ * <p>Thread-safety: This service is not thread-safe due to the internal cache implementation.
+ * Consider synchronization if used in concurrent environments.
+ * 
+ * @see UserRepository
+ * @see EmailService
  */
 public class UserService {
 
@@ -15,14 +23,29 @@ public class UserService {
     private final UserRepository repository;
     private final EmailService emailService;
 
+    /**
+     * Creates a new UserService with the specified repository and email service.
+     * Both dependencies are required for user management operations.
+     *
+     * @param repository the repository for user persistence operations
+     * @param emailService the service for sending user-related emails
+     */
     public UserService(UserRepository repository, EmailService emailService) {
         this.repository = repository;
         this.emailService = emailService;
     }
 
-        /**
-         * Gets user.
-         */
+    /**
+     * Finds a user by ID with optional inclusion of deleted users and selective field loading.
+     * Results are cached for performance. Deleted users are filtered out by default unless
+     * explicitly requested.
+     *
+     * @param id the user ID to search for
+     * @param includeDeleted whether to include deleted users in the search results
+     * @param fieldsToLoad specific fields to load from the repository (null loads all fields)
+     * @return the user wrapped in Optional, or empty if not found or deleted (when includeDeleted is false)
+     * @throws IllegalArgumentException if id is null or non-positive
+     */
     public Optional<User> findUserById(Long id, boolean includeDeleted, List<String> fieldsToLoad) {
         if (id == null || id <= 0) {
             throw new IllegalArgumentException("Invalid user ID");
@@ -50,6 +73,19 @@ public class UserService {
         return user;
     }
 
+    /**
+     * Creates a new user in the system with validation and notification.
+     * Validates email format and uniqueness before creating the user. Automatically sends
+     * a welcome email and updates the user cache upon successful creation.
+     *
+     * @param email user's email address (must be valid format)
+     * @param name user's display name
+     * @param role user's role (defaults to STANDARD if null)
+     * @param metadata additional user attributes (empty map if null)
+     * @return the newly created and persisted User
+     * @throws IllegalArgumentException if email is null or invalid format
+     * @throws UserAlreadyExistsException if email already exists in the system
+     */
     public User createUser(String email, String name, UserRole role, Map<String, Object> metadata) {
         // Validate email format
         if (email == null || !email.matches("^[A-Za-z0-9+_.-]+@(.+)$")) {
@@ -79,11 +115,16 @@ public class UserService {
         return savedUser;
     }
 
-        /**
-         * Processes batch of user updates with retry logic.
-         * @param updates the updates
-         * @return results
-         */
+    /**
+     * Processes a batch of user updates with automatic retry logic and configurable error handling.
+     * Each update is attempted up to maxRetries times with exponential backoff between attempts.
+     * Updates are processed sequentially, and results are collected for all attempted updates.
+     *
+     * @param updates list of user updates to apply
+     * @param maxRetries maximum number of attempts per update (must be at least 1)
+     * @param stopOnError if true, stops processing remaining updates after the first failure
+     * @return list of results indicating success/failure for each update attempt
+     */
     public List<BatchUpdateResult> processBatchUpdates(List<UserUpdate> updates, int maxRetries, boolean stopOnError) {
         List<BatchUpdateResult> results = new ArrayList<>();
 
@@ -140,6 +181,13 @@ public class UserService {
         userCache.put(user.getId(), user);
     }
 
+    /**
+     * Deactivates users who haven't logged in within the specified threshold.
+     * Only non-admin, non-deleted users are affected. Deactivated users are removed from cache.
+     *
+     * @param inactiveDaysThreshold number of days of inactivity before deactivation
+     * @param sendNotification whether to send email notifications to deactivated users
+     */
     public void deactivateInactiveUsers(long inactiveDaysThreshold, boolean sendNotification) {
         long cutoffTime = System.currentTimeMillis() - (inactiveDaysThreshold * 24 * 60 * 60 * 1000);
 

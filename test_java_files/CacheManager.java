@@ -8,7 +8,16 @@ import java.util.Map;
 import java.util.function.Function;
 
 /**
- * A generic cache manager with TTL support and automatic eviction.
+ * A thread-safe, generic cache implementation with automatic expiration and configurable eviction policies.
+ * Supports Time-To-Live (TTL) for cache entries and maintains a maximum cache size with automatic
+ * eviction when capacity is reached. Entries expire based on TTL and are periodically cleaned up
+ * by a background thread.
+ * 
+ * <p>This cache is suitable for high-concurrency environments and provides statistics gathering
+ * capabilities for monitoring cache performance and usage patterns.
+ * 
+ * @param <K> the type of keys maintained by this cache
+ * @param <V> the type of cached values
  */
 public class CacheManager<K, V> {
 
@@ -18,6 +27,14 @@ public class CacheManager<K, V> {
     private final ScheduledExecutorService evictionExecutor;
     private final EvictionPolicy evictionPolicy;
 
+    /**
+     * Constructs a new CacheManager with specified TTL, size limit, and eviction policy.
+     * Automatically schedules periodic eviction of expired entries at intervals of half the TTL.
+     *
+     * @param defaultTtlMillis default time-to-live for cache entries in milliseconds
+     * @param maxSize maximum number of entries before eviction occurs
+     * @param policy eviction strategy when cache reaches capacity (LRU, LFU, or FIFO)
+     */
     public CacheManager(long defaultTtlMillis, int maxSize, EvictionPolicy policy) {
         this.cache = new ConcurrentHashMap<>();
         this.defaultTtlMillis = defaultTtlMillis;
@@ -34,6 +51,15 @@ public class CacheManager<K, V> {
         );
     }
 
+    /**
+     * Retrieves a cached value or computes and caches it if absent or expired.
+     * The computed value is stored with the specified TTL or the default TTL if none is provided.
+     *
+     * @param key the cache key
+     * @param loader function to compute the value if not cached
+     * @param customTtlMillis custom TTL in milliseconds; uses default TTL if ≤ 0
+     * @return the cached or newly computed value, or null if the loader returns null
+     */
     public V getOrCompute(K key, Function<K, V> loader, long customTtlMillis) {
         CacheEntry<V> entry = cache.get(key);
 
@@ -65,6 +91,13 @@ public class CacheManager<K, V> {
         cache.put(key, new CacheEntry<>(value, expirationTime));
     }
 
+    /**
+     * Retrieves a value from the cache if it exists and hasn't expired.
+     * Expired entries are automatically removed when accessed.
+     *
+     * @param key the key whose associated value is to be returned
+     * @return the cached value, or null if not found or expired
+     */
     public V get(K key) {
         CacheEntry<V> entry = cache.get(key);
         if (entry == null) {
@@ -78,6 +111,17 @@ public class CacheManager<K, V> {
         return entry.getValue();
     }
 
+    /**
+     * Computes comprehensive statistics about the current cache state.
+     * Analyzes cache entries to provide metrics including entry counts, access patterns,
+     * age distribution, and optionally memory usage and key distribution data.
+     *
+     * @param includeMemoryEstimate whether to calculate estimated memory consumption
+     * @param includeKeyDistribution whether to analyze key distribution patterns
+     * @return map containing cache metrics with keys: totalEntries, expiredEntries, activeEntries,
+     *         totalAccessCount, averageAccessCount, hitRatio, oldestEntryAgeMs, newestEntryAgeMs,
+     *         and optionally estimatedMemoryBytes and keyDistribution
+     */
     public Map<String, Object> computeCacheStatistics(boolean includeMemoryEstimate, boolean includeKeyDistribution) {
         Map<String, Object> stats = new ConcurrentHashMap<>();
 
@@ -186,6 +230,14 @@ public class CacheManager<K, V> {
         return new ConcurrentHashMap<>();
     }
 
+    /**
+     * Gracefully shuts down the cache manager and releases all resources.
+     * Attempts to terminate the eviction executor with a 5-second timeout before forcing shutdown.
+     * Clears all cached entries after executor termination.
+     * 
+     * This method ensures proper cleanup of background threads and should be called when
+     * the cache manager is no longer needed to prevent resource leaks.
+     */
     public void shutdown() {
         evictionExecutor.shutdown();
         try {
@@ -199,6 +251,13 @@ public class CacheManager<K, V> {
         cache.clear();
     }
 
+    /**
+     * Defines the eviction strategy for cache entries when the cache reaches maximum capacity.
+     * 
+     * LRU (Least Recently Used) - Evicts the entry that hasn't been accessed for the longest time.
+     * LFU (Least Frequently Used) - Evicts the entry with the lowest access count.
+     * FIFO (First In First Out) - Evicts the oldest entry based on creation time.
+     */
     public enum EvictionPolicy {
         LRU, LFU, FIFO
     }
