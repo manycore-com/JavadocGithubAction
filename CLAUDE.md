@@ -39,9 +39,9 @@ pip install -r scripts/github_action_javadoc/requirements.txt
 
 The pipeline minimizes API costs by filtering at each stage:
 
-1. **Stage 1: Heuristic Checks** (`heuristic_checks.py`) - Free, fast rule-based checks using tree-sitter. If heuristics pass, existing Javadoc is kept and AI is bypassed entirely.
+1. **Stage 1: Heuristic Checks** (`heuristic_checks.py`) - Free, fast rule-based checks using tree-sitter. Heuristics are used to flag obvious issues, but all Javadoc is still assessed by AI in later stages.
 
-2. **Stage 2: Haiku Assessment** (`action.py:assess_javadoc_quality`) - Only runs if heuristics fail. Uses Claude Haiku to evaluate quality, returns GOOD or IMPROVE.
+2. **Stage 2: Haiku Assessment** (`action.py:assess_javadoc_quality`) - Uses Claude Haiku to evaluate quality, returns GOOD or IMPROVE.
 
 3. **Stage 3: Opus Generation** (`action.py:generate_javadoc`) - Only runs if Haiku says IMPROVE. Uses Claude Opus to generate improved Javadoc.
 
