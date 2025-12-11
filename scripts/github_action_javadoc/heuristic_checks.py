@@ -239,13 +239,14 @@ def check_git_diff_changes(item: Dict, file_path: str) -> Tuple[bool, str]:
         return False, ""
 
 
-def check_incomplete_description(existing_javadoc: str) -> Tuple[bool, str]:
+def check_incomplete_description(existing_javadoc: Optional[str]) -> Tuple[bool, str]:
     """
     Check for incomplete sentences in the javadoc description.
 
     Detects descriptions that end abruptly without proper punctuation,
     like "Removes variables that were defined in this dabb but whose defining stores were not part of the"
 
+    If `existing_javadoc` is None or an empty string, returns (False, "").
     Returns (has_issue, reason)
     """
     if not existing_javadoc:
