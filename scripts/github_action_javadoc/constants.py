@@ -24,3 +24,7 @@ METHOD_INDENT = '    ' # Standard method body indentation
 # Number of versions to generate (always 1)
 # Removed multi-version support as it generated duplicates without value
 DEFAULT_NUM_VERSIONS = 1
+
+# PR size limits
+# Skip processing for large PRs (refactors, package moves, initial imports)
+MAX_METHODS_IN_PR = 20

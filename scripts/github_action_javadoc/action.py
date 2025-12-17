@@ -23,7 +23,8 @@ from constants import (
     OPUS_OUTPUT_TOKEN_COST,
     HAIKU_INPUT_TOKEN_COST,
     HAIKU_OUTPUT_TOKEN_COST,
-    DEFAULT_NUM_VERSIONS
+    DEFAULT_NUM_VERSIONS,
+    MAX_METHODS_IN_PR
 )
 
 # Import logger
@@ -323,6 +324,25 @@ def read_java_file(file_path):
     """
     with open(file_path, 'r', encoding='utf-8') as f:
         return f.read()
+
+def count_total_items(java_files):
+    """Count total items needing documentation across all files.
+
+    Args:
+        java_files: List of Java file paths
+
+    Returns:
+        int: Total number of items needing documentation
+    """
+    total = 0
+    for java_file in java_files:
+        try:
+            java_content = read_java_file(java_file)
+            items = parse_java_file(java_content)
+            total += len(items)
+        except Exception as e:
+            logger.warning(f"Could not parse {java_file} for counting: {e}")
+    return total
 
 def write_updated_file(file_path, java_content, items_with_javadoc):
     """Write updated content back to file.
@@ -755,6 +775,12 @@ def main(single_file=None):
 
     if not config['java_files']:
         logger.info("No Java files found in PR changes.")
+        return
+
+    # Check if PR is too large to process
+    total_items = count_total_items(config['java_files'])
+    if total_items > MAX_METHODS_IN_PR:
+        logger.info(f"Skipping: {total_items} methods exceeds limit of {MAX_METHODS_IN_PR}")
         return
 
     client = Anthropic(api_key=config['api_key'])
