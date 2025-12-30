@@ -27,4 +27,4 @@ DEFAULT_NUM_VERSIONS = 1
 
 # PR size limits
 # Skip processing for large PRs (refactors, package moves, initial imports)
-MAX_METHODS_IN_PR = 20
+MAX_METHODS_IN_PR = 80
