@@ -5,7 +5,7 @@ Shared across all modules.
 """
 
 # API Configuration
-CLAUDE_MODEL_OPUS = "claude-opus-4-1-20250805"
+CLAUDE_MODEL_OPUS = "claude-opus-4-latest"
 CLAUDE_MODEL_HAIKU = "claude-3-5-haiku-latest"
 MAX_TOKENS = 5000
 
