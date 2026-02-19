@@ -61,11 +61,11 @@ class TestConfigurationConstants(unittest.TestCase):
 
     def test_action_constants(self):
         """Test action.py constants."""
-        self.assertEqual(CLAUDE_MODEL_OPUS, "claude-opus-4-latest")
-        self.assertEqual(CLAUDE_MODEL_HAIKU, "claude-3-5-haiku-latest")
+        self.assertEqual(CLAUDE_MODEL_OPUS, "claude-opus-4-6")
+        self.assertEqual(CLAUDE_MODEL_HAIKU, "claude-haiku-4-5")
         self.assertEqual(MAX_TOKENS, 5000)
-        self.assertEqual(OPUS_INPUT_TOKEN_COST, 0.000015)
-        self.assertEqual(OPUS_OUTPUT_TOKEN_COST, 0.000075)
+        self.assertEqual(OPUS_INPUT_TOKEN_COST, 0.000005)
+        self.assertEqual(OPUS_OUTPUT_TOKEN_COST, 0.000025)
         self.assertEqual(HAIKU_INPUT_TOKEN_COST, 0.000001)
         self.assertEqual(HAIKU_OUTPUT_TOKEN_COST, 0.000005)
 
@@ -240,7 +240,7 @@ class TestCostCalculation(unittest.TestCase):
         expected_cost = (input_tokens * OPUS_INPUT_TOKEN_COST) + (output_tokens * OPUS_OUTPUT_TOKEN_COST)
 
         # Verify the calculation
-        self.assertAlmostEqual(expected_cost, 0.0525, places=4)
+        self.assertAlmostEqual(expected_cost, 0.0175, places=4)
 
         # Verify constants are reasonable
         self.assertGreater(OPUS_OUTPUT_TOKEN_COST, OPUS_INPUT_TOKEN_COST,
